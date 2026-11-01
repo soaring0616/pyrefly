@@ -234,12 +234,11 @@ assert_type(Model().maybe_ratio, float | None)
 );
 
 testcase!(
-    bug = "Stored Enum instances inherit a string-only TypeEngine argument",
     test_sqlalchemy_mapped_column_stored_enum,
     sqlalchemy_env(),
     r#"
 from enum import Enum as PythonEnum
-from typing import assert_type
+from typing import Any, assert_type
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.sql.sqltypes import Enum
 
@@ -250,7 +249,7 @@ color_type = Enum(Color)
 class Model:
     color = mapped_column(color_type, nullable=False)
 
-assert_type(Model().color, str)
+assert_type(Model().color, Any)
 "#,
 );
 

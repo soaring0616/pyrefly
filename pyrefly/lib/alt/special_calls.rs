@@ -675,14 +675,21 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
     }
 
     fn python_type_from_type_engine_class(&self, cls: &ClassType) -> Option<Type> {
-        let type_engine = self
-            .get_mro_for_class(cls.class_object())
-            .ancestors(self.stdlib)
-            .find(|ancestor| {
-                ancestor
-                    .class_object()
-                    .has_toplevel_qname("sqlalchemy.sql.type_api", "TypeEngine")
-            })?;
+        let mro = self.get_mro_for_class(cls.class_object());
+        // Enum's String base does not describe its Python enum values.
+        if cls.has_qname("sqlalchemy.sql.sqltypes", "Enum")
+            || mro
+                .ancestors_no_object()
+                .iter()
+                .any(|ancestor| ancestor.has_qname("sqlalchemy.sql.sqltypes", "Enum"))
+        {
+            return None;
+        }
+        let type_engine = mro.ancestors(self.stdlib).find(|ancestor| {
+            ancestor
+                .class_object()
+                .has_toplevel_qname("sqlalchemy.sql.type_api", "TypeEngine")
+        })?;
         self.as_superclass(cls, type_engine.class_object())?
             .targs()
             .as_slice()
