@@ -73,6 +73,7 @@ use crate::binding::binding::KeyClass;
 use crate::binding::binding::KeyDecoratedFunction;
 use crate::binding::binding::KeyDecorator;
 use crate::binding::binding::KeyLegacyTypeParam;
+use crate::binding::classmethod::MethodReceiverKind;
 use crate::config::error_kind::ErrorKind;
 use crate::error::collector::ErrorCollector;
 use crate::error::context::TypeCheckContext;
@@ -604,8 +605,7 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         // accordingly. This is not totally correct, since it doesn't account for chaining
         // decorators, or weird cases like both decorators existing at the same time.
         let mut receiver_tparam = None;
-        if def.is_reassigned_classmethod
-            && def.is_used_before_classmethod
+        if def.method_receiver == MethodReceiverKind::Shared
             && def
                 .parameters
                 .iter()
@@ -638,7 +638,7 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         } else if flags.is_classmethod
             || found_class_property
             || is_dunder_new
-            || def.is_reassigned_classmethod
+            || def.method_receiver != MethodReceiverKind::None
         {
             self_type = self_type.map(|t| self.heap.mk_type_of(t));
         } else if flags.is_staticmethod {

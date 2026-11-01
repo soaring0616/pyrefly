@@ -447,31 +447,13 @@ impl<'a> BindingsBuilder<'a> {
         );
         self.add_name_definitions(&legacy);
 
-        // Inspect only assignment headers; ordinary method bodies need no receiver-use scan.
-        let classmethod_candidates = body
-            .iter()
-            .filter_map(|stmt| {
-                if let Stmt::Assign(assign) = stmt
-                    && let [Expr::Name(name)] = assign.targets.as_slice()
-                    && let Expr::Call(call) = assign.value.as_ref()
-                    && let [Expr::Name(argument)] = &*call.arguments.args
-                    && argument.id == name.id
-                    && call.arguments.keywords.is_empty()
-                {
-                    Some(name.id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
         self.scopes.push(Scope::class_body(
             x.range,
             class_indices.clone(),
             x.name.clone(),
             has_protocol_base,
         ));
-        self.scopes
-            .set_classmethod_reassignment_candidates(classmethod_candidates);
+        let previous_tracking = self.begin_classmethod_receivers(&body);
         // Record the class body range for solve-time `typing.Self` resolution.
         // We use the body extent (first..last stmt) — not `x.range` — so
         // bases, decorators, and type params (which are evaluated in the
@@ -489,6 +471,7 @@ impl<'a> BindingsBuilder<'a> {
         self.finish_classmethod_receivers();
         let (field_definitions, nn_module_registrations, uninitialized_fields) =
             self.scopes.finish_class_and_get_field_definitions();
+        self.track_classmethod_uses = previous_tracking;
         self.insert_binding_idx(
             class_indices.synthesized_fields_idx,
             BindingClassSynthesizedFields {

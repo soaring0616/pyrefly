@@ -77,6 +77,7 @@ use crate::binding::base_class::BaseClassGeneric;
 use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
+use crate::binding::classmethod::MethodReceiverKind;
 use crate::binding::django::DjangoFieldInfo;
 use crate::binding::narrow::NarrowOp;
 use crate::binding::narrow::NarrowingSubject;
@@ -146,7 +147,7 @@ assert_words!(BindingClassSynthesizedFields, 2);
 assert_bytes!(BindingLegacyTypeParam, 16);
 assert_words!(BindingYield, 4);
 assert_words!(BindingYieldFrom, 4);
-assert_words!(BindingDecorator, 10);
+assert_words!(BindingDecorator, 9);
 assert_bytes!(BindingDecoratedFunction, 24);
 assert_words!(BindingUndecoratedFunction, 18);
 
@@ -2066,10 +2067,6 @@ pub enum FunctionParameter {
 pub struct BindingDecorator {
     pub expr: Expr,
     pub trailing_name: Option<Name>,
-    /// Direct receiver-feature proof captured where the expression is evaluated.
-    pub special: Option<SpecialExport>,
-    /// Legacy overload classification is retained even when direct proof is unavailable.
-    pub has_overload: bool,
 }
 
 impl DisplayWith<Bindings> for BindingDecorator {
@@ -2085,12 +2082,7 @@ pub struct FunctionDefData {
     pub parameters: Box<Parameters>,
     pub type_params: Option<Box<TypeParams>>,
     pub is_async: bool,
-    /// Whether this method is converted with the class-body idiom `f = classmethod(f)`.
-    pub is_reassigned_classmethod: bool,
-    /// Whether another expression uses this function before its classmethod assignment.
-    pub is_used_before_classmethod: bool,
-    /// A plain classmethod or staticmethod has the same binding on instances and classes.
-    pub is_receiver_invariant_helper: bool,
+    pub(crate) method_receiver: MethodReceiverKind,
     pub range: TextRange,
 }
 
@@ -2101,9 +2093,7 @@ impl FunctionDefData {
             parameters: def.parameters,
             type_params: def.type_params,
             is_async: def.is_async,
-            is_reassigned_classmethod: false,
-            is_used_before_classmethod: false,
-            is_receiver_invariant_helper: false,
+            method_receiver: MethodReceiverKind::None,
             range: def.range,
         }
     }

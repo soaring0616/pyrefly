@@ -1546,6 +1546,170 @@ assert_type(A().g("hello"), str)
     "#,
 );
 
+// Receiver-boundary tests keep instance aliases precise when class access has different behavior.
+testcase!(
+    test_desugared_receiver_boundary_descriptor,
+    r#"
+from typing import assert_type, overload
+
+class Descriptor:
+    @overload
+    def __get__(self, obj: None, owner: type[object]) -> str: ...
+    @overload
+    def __get__(self, obj: A, owner: type[object]) -> int: ...
+    def __get__(self, obj: object | None, owner: type[object]) -> int | str:
+        return "class" if obj is None else 1
+
+class A:
+    value = Descriptor()
+    def f(self):
+        return self.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_receiver_alias,
+    r#"
+from typing import assert_type
+
+class A:
+    @property
+    def value(self) -> int:
+        return 1
+    def f(self):
+        receiver = self
+        return receiver.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_nested_capture,
+    r#"
+from typing import assert_type
+
+class A:
+    @property
+    def value(self) -> int:
+        return 1
+    def f(self):
+        def read():
+            return self.value
+        return read
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g()(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_final_helper,
+    r#"
+from typing import assert_type
+
+class A:
+    @classmethod
+    def helper(cls) -> int:
+        return 1
+    def f(self):
+        return self.helper()
+    g = f
+    f = classmethod(f)
+    def helper(self) -> str:
+        return "instance"
+
+assert_type(A().g(), str)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_instance_field,
+    r#"
+from typing import assert_type
+
+class A:
+    def __init__(self):
+        self.value = 1
+    def f(self):
+        return self.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_generic_helper,
+    r#"
+from typing import assert_type
+
+class A[T]:
+    @classmethod
+    def helper(cls, value: T) -> T:
+        return value
+    def f(self, value: T):
+        return self.helper(value)
+    g = f
+    f = classmethod(f)
+
+assert_type(A[int]().g(1), int)
+assert_type(A[int].f(1), int)
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_helper_before_wrap,
+    r#"
+from typing import assert_type
+
+class A:
+    @classmethod
+    def helper(cls) -> int:
+        return 1
+    def f(self):
+        return self.helper()
+    g = f
+    def helper(self) -> str:
+        return "instance"
+    f = classmethod(f)
+
+assert_type(A().g(), str)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_receiver_write,
+    r#"
+from typing import assert_type
+
+class A:
+    def f(self) -> int:
+        self.created = 1
+        return 1
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.created  # E: Instance-only attribute `created`
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
 testcase!(
     test_desugared_classmethod_respects_shadowing,
     r#"
@@ -2325,170 +2489,6 @@ class C:
     a = property(lambda self: self.name)
     b = cached_property(lambda self: self.name)
     c = staticmethod(lambda x: x.name)  # E: Type of lambda parameter `x` is unknown  # E: The type of attribute `name` is unknown
-"#,
-);
-
-// Receiver-boundary tests keep instance aliases precise when class access has different behavior.
-testcase!(
-    test_desugared_receiver_boundary_descriptor,
-    r#"
-from typing import assert_type, overload
-
-class Descriptor:
-    @overload
-    def __get__(self, obj: None, owner: type[object]) -> str: ...
-    @overload
-    def __get__(self, obj: A, owner: type[object]) -> int: ...
-    def __get__(self, obj: object | None, owner: type[object]) -> int | str:
-        return "class" if obj is None else 1
-
-class A:
-    value = Descriptor()
-    def f(self):
-        return self.value
-    g = f
-    f = classmethod(f)
-
-assert_type(A().g(), int)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_receiver_alias,
-    r#"
-from typing import assert_type
-
-class A:
-    @property
-    def value(self) -> int:
-        return 1
-    def f(self):
-        receiver = self
-        return receiver.value
-    g = f
-    f = classmethod(f)
-
-assert_type(A().g(), int)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_nested_capture,
-    r#"
-from typing import assert_type
-
-class A:
-    @property
-    def value(self) -> int:
-        return 1
-    def f(self):
-        def read():
-            return self.value
-        return read
-    g = f
-    f = classmethod(f)
-
-assert_type(A().g()(), int)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_final_helper,
-    r#"
-from typing import assert_type
-
-class A:
-    @classmethod
-    def helper(cls) -> int:
-        return 1
-    def f(self):
-        return self.helper()
-    g = f
-    f = classmethod(f)
-    def helper(self) -> str:
-        return "instance"
-
-assert_type(A().g(), str)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_instance_field,
-    r#"
-from typing import assert_type
-
-class A:
-    def __init__(self):
-        self.value = 1
-    def f(self):
-        return self.value
-    g = f
-    f = classmethod(f)
-
-assert_type(A().g(), int)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_generic_helper,
-    r#"
-from typing import assert_type
-
-class A[T]:
-    @classmethod
-    def helper(cls, value: T) -> T:
-        return value
-    def f(self, value: T):
-        return self.helper(value)
-    g = f
-    f = classmethod(f)
-
-assert_type(A[int]().g(1), int)
-assert_type(A[int].f(1), int)
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_helper_before_wrap,
-    r#"
-from typing import assert_type
-
-class A:
-    @classmethod
-    def helper(cls) -> int:
-        return 1
-    def f(self):
-        return self.helper()
-    g = f
-    def helper(self) -> str:
-        return "instance"
-    f = classmethod(f)
-
-assert_type(A().g(), str)
-A.f()  # E: Argument `type[A]` is not assignable
-"#,
-);
-
-testcase!(
-    test_desugared_receiver_boundary_receiver_write,
-    r#"
-from typing import assert_type
-
-class A:
-    def f(self) -> int:
-        self.created = 1
-        return 1
-    g = f
-    f = classmethod(f)
-
-assert_type(A().g(), int)
-A.created  # E: Instance-only attribute `created`
-A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 

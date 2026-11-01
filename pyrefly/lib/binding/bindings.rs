@@ -325,6 +325,8 @@ pub struct BindingsBuilder<'a> {
     solver: &'a Solver,
     pub has_docstring: bool,
     pub scopes: Scopes,
+    /// Active only in candidate class bodies, including their parameter-default scopes.
+    pub(super) track_classmethod_uses: bool,
     table: BindingTable,
     pub check_unannotated_defs: bool,
     /// When true, unannotated function bodies are still analyzed (creating
@@ -847,6 +849,7 @@ impl Bindings {
             await_context: AwaitContext::General,
             has_docstring: Ast::has_docstring(&x),
             scopes: Scopes::module(x.range, enable_trace, module_info.path().is_interface()),
+            track_classmethod_uses: false,
             table: Default::default(),
             check_unannotated_defs,
             analyze_unannotated_for_ide,
@@ -1265,132 +1268,6 @@ impl<'a> BindingsBuilder<'a> {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
         self.table.get_mut::<K>().1.get_mut(idx)
-    }
-
-    /// Infer the receiver for a local classmethod assignment without changing method flags.
-    pub fn infer_classmethod_receiver(&mut self, name: &Name) {
-        let Some(mut idx) = self.scopes.current_flow_idx(name) else {
-            return;
-        };
-        let mut functions = Vec::new();
-        while let Some(Binding::Function {
-            decorated_idx,
-            pred_idx,
-            ..
-        }) = self.idx_to_binding(idx)
-        {
-            let pred_idx = *pred_idx;
-            let undecorated_idx = self
-                .idx_to_binding(*decorated_idx)
-                .expect("a function flow binding has a decorated function")
-                .undecorated_idx;
-            let binding = self
-                .idx_to_binding(undecorated_idx)
-                .expect("a decorated function has an undecorated function");
-            let specials = binding
-                .decorators
-                .iter()
-                .map(|idx| {
-                    let decorator = self
-                        .idx_to_binding(*idx)
-                        .expect("a decorator has a binding");
-                    decorator.special
-                })
-                .collect::<Vec<_>>();
-            let has_overload = binding.decorators.iter().any(|idx| {
-                self.idx_to_binding(*idx)
-                    .expect("a decorator has a binding")
-                    .has_overload
-            });
-            if !functions.is_empty() && !has_overload {
-                break;
-            }
-            // Custom decorators receive the original function and can change its receiver.
-            if specials
-                .iter()
-                .any(|special| *special != Some(SpecialExport::Overload))
-            {
-                return;
-            }
-            functions.push(undecorated_idx);
-            let Some(pred_idx) = pred_idx else { break };
-            idx = pred_idx;
-        }
-        if functions.is_empty()
-            || functions
-                .iter()
-                .any(|idx| !self.scopes.has_classmethod_receiver_candidate(*idx))
-        {
-            return;
-        }
-        let is_used = functions.iter().any(|idx| {
-            self.idx_to_binding(*idx)
-                .expect("a decorated function has an undecorated function")
-                .def
-                .is_used_before_classmethod
-        });
-        for idx in &functions {
-            let function = &mut self
-                .idx_to_binding_mut(*idx)
-                .expect("a decorated function has an undecorated function")
-                .def;
-            function.is_reassigned_classmethod = true;
-            function.is_used_before_classmethod = is_used;
-        }
-        // Mark the constructor operand before binding its expression, but wait for final
-        // class members before accepting shared receiver inference or changing attributes.
-        self.scopes.queue_classmethod_receiver(functions);
-    }
-
-    pub fn finish_classmethod_receivers(&mut self) {
-        let receivers = self.scopes.take_classmethod_receiver_state();
-        for functions in receivers.pending {
-            let leader = self
-                .idx_to_binding(functions[0])
-                .expect("a queued receiver group has function bindings");
-            let is_used = leader.def.is_used_before_classmethod;
-            let name = leader.def.name.id.clone();
-            let range = leader.def.range;
-            let supported = !is_used
-                || functions.iter().all(|idx| {
-                    receivers
-                        .uses
-                        .get(idx)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|members| {
-                            members.iter().all(|member| {
-                                let Some(idx) = self.scopes.current_flow_idx(member) else {
-                                    return false;
-                                };
-                                let Some(Binding::Function { decorated_idx, .. }) =
-                                    self.idx_to_binding(idx)
-                                else {
-                                    return false;
-                                };
-                                let undecorated = self
-                                    .idx_to_binding(*decorated_idx)
-                                    .expect("a function flow binding has a decorated function")
-                                    .undecorated_idx;
-                                self.idx_to_binding(undecorated)
-                                    .expect("a decorated function has an undecorated function")
-                                    .def
-                                    .is_receiver_invariant_helper
-                            })
-                        })
-                });
-            if supported {
-                self.scopes.mark_method_as_classmethod(&name, range);
-            } else {
-                // Keep the original instance signature. The classmethod call reports its
-                // unsupported receiver rather than exporting an uncorrelated return union.
-                for idx in functions {
-                    self.idx_to_binding_mut(idx)
-                        .expect("a queued receiver group has function bindings")
-                        .def
-                        .is_reassigned_classmethod = false;
-                }
-            }
-        }
     }
 
     /// Declare a `Key` as a usage, which can be used for name lookups. Like `idx_for_promise`,
@@ -1876,28 +1753,6 @@ impl<'a> BindingsBuilder<'a> {
         let mut visited_names: SmallSet<Name> = SmallSet::new();
         let mut visited_keys: SmallSet<Idx<Key>> = SmallSet::new();
         self.as_special_export_inner(e, &mut visited_names, &mut visited_keys)
-    }
-
-    /// Receiver rewrites need direct import or implicit-builtin provenance. Assigned
-    /// aliases and non-import merge styles are unsupported, not spelling-based proofs.
-    pub(super) fn as_receiver_special_export(&self, expr: &Expr) -> Option<SpecialExport> {
-        let (name, base) = match expr {
-            Expr::Name(name) => (&name.id, None),
-            Expr::Attribute(attr) if let Expr::Name(base) = attr.value.as_ref() => {
-                (&attr.attr.id, Some(&base.id))
-            }
-            _ => return None,
-        };
-        if let Some((_, style)) = self.scopes.binding_idx_for_name(base.unwrap_or(name))
-            && !matches!(
-                style,
-                FlowStyle::Import(..) | FlowStyle::ImportAs(_) | FlowStyle::MergeableImport(_)
-            )
-        {
-            return None;
-        }
-        self.scopes
-            .as_special_export(name, base, self.module_info.name(), self.lookup)
     }
 
     pub fn class_object_is_generic(&self, idx: Idx<Key>) -> bool {

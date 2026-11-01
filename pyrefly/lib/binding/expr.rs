@@ -420,22 +420,8 @@ impl<'a> BindingsBuilder<'a> {
                 is_module_scope,
                 is_outer_class_type_parameter,
             } => {
-                if let Some(Binding::Function {
-                    decorated_idx,
-                    in_class: true,
-                    ..
-                }) = self.idx_to_binding(value_idx.unwrap_or(lookup_result_idx))
-                {
-                    let undecorated_idx = self
-                        .idx_to_binding(*decorated_idx)
-                        .expect("a function flow binding has a decorated function")
-                        .undecorated_idx;
-                    let function = self
-                        .idx_to_binding_mut(undecorated_idx)
-                        .expect("a decorated function has an undecorated function");
-                    if !function.def.is_reassigned_classmethod {
-                        function.def.is_used_before_classmethod = true;
-                    }
+                if self.track_classmethod_uses {
+                    self.record_classmethod_use(value_idx.unwrap_or(lookup_result_idx));
                 }
                 if is_outer_class_type_parameter {
                     return self.insert_binding(
@@ -1727,13 +1713,6 @@ impl<'a> BindingsBuilder<'a> {
     ) -> Vec<Idx<KeyDecorator>> {
         let mut decorator_keys = Vec::with_capacity(decorators.len());
         for mut x in decorators {
-            let has_overload =
-                self.as_special_export(&x.expression) == Some(SpecialExport::Overload);
-            let special = if self.scopes.has_classmethod_reassignment_candidates() {
-                self.as_receiver_special_export(&x.expression)
-            } else {
-                None
-            };
             self.ensure_expr(&mut x.expression, usage);
             let trailing_name = Ast::decorator_trailing_name(&x.expression).map(Name::new);
             let k = self.insert_binding(
@@ -1741,8 +1720,6 @@ impl<'a> BindingsBuilder<'a> {
                 BindingDecorator {
                     expr: x.expression,
                     trailing_name,
-                    special,
-                    has_overload,
                 },
             );
             decorator_keys.push(k);
