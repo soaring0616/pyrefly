@@ -2142,6 +2142,31 @@ def test_key_narrowing(x: str | None, values: dict[str, int], mapping: Mapping[s
 );
 
 testcase!(
+    test_in_mapping_preserves_any_operand,
+    r#"
+from typing import Any, Mapping, assert_type
+
+def test_explicit_any(x: Any, values: dict[str, int], mapping: Mapping[str, int]) -> None:
+    if x in values:
+        assert_type(x, Any)
+    if x in mapping:
+        assert_type(x, Any)
+    if x not in values:
+        return
+    assert_type(x, Any)
+
+def test_implicit_any(x, values: dict[str, int], mapping: Mapping[str, int]) -> None:
+    if x in values:
+        assert_type(x, Any)
+    if x in mapping:
+        assert_type(x, Any)
+    if x not in mapping:
+        return
+    assert_type(x, Any)
+"#,
+);
+
+testcase!(
     bug = "Mapping membership does not preserve numeric equality",
     test_in_mapping_numeric_equality,
     r#"
