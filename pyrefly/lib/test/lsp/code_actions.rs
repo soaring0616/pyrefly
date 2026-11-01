@@ -4573,6 +4573,34 @@ class Child(Base, ABC):
 }
 
 #[test]
+fn push_member_down_into_pass_sharing_a_line() {
+    let code = r#"
+class Base:
+    # MOVE-START
+    def foo(self):
+        pass
+    # MOVE-END
+
+class Child(Base):
+    """Child doc."""; pass
+"#;
+    let (module_info, actions, _) = compute_push_down_actions(code);
+    let updated = apply_refactor_edits_for_module(&module_info, &actions[0]);
+    // BUG: replacing the `pass` line also removes the docstring.
+    let expected = r#"
+class Base:
+    # MOVE-START
+    pass
+    # MOVE-END
+
+class Child(Base):
+    def foo(self):
+        pass
+"#;
+    assert_eq!(expected, updated);
+}
+
+#[test]
 fn extract_superclass_basic() {
     let code = r#"
 class Foo:
@@ -5472,6 +5500,274 @@ class Impl(Proto):
 "#,
         after
     );
+}
+
+/// Applies "Implement abstract members" with the cursor at the start of `cursor` in
+/// `main`, or returns `None` when the action is not offered.
+fn implement_abstract_members_at(
+    env: TestEnv,
+    files: &[(&'static str, &str)],
+    cursor: &str,
+) -> Option<String> {
+    let (handles, state) = mk_multi_file_state_with_env(env, files, Require::Everything, false);
+    let handle = &handles["main"];
+    let (_, code) = files.iter().find(|(name, _)| *name == "main").unwrap();
+    let position = TextSize::try_from(code.find(cursor).unwrap()).unwrap();
+    let transaction = state.transaction();
+    let info = transaction.get_module_info(handle).unwrap();
+    let actions =
+        transaction.implement_abstract_members_code_actions(handle, TextRange::empty(position))?;
+    Some(apply_refactor_edits_for_module(&info, &actions[0].edits))
+}
+
+#[test]
+fn implement_abstract_members_param_spec_signature() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import Callable
+class Base(ABC):
+    @abstractmethod
+    def run[**P, R](self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+    @abstractmethod
+    def named[**P](self, args: int, *rest: P.args, **kw: P.kwargs) -> None: ...
+    @abstractmethod
+    def other(self) -> int: ...
+class Child(Base):
+    pass
+"#;
+    let after = implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child");
+    // BUG: the `*args: P.args, **kwargs: P.kwargs` signature removes the whole action.
+    assert_eq!(after, None);
+}
+
+#[test]
+fn implement_abstract_members_specialized_param_spec() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import Callable, Concatenate, Generic, ParamSpec
+P = ParamSpec("P")
+class Base(ABC, Generic[P]):
+    @abstractmethod
+    def run(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+    @abstractmethod
+    def wrap(self, fn: Callable[Concatenate[int, P], None]) -> None: ...
+    @abstractmethod
+    def wrap_named(self, arg2: int, *args: P.args, **kwargs: P.kwargs) -> None: ...
+class Child(Base[[int, str]]):
+    pass
+class Child2(Base[...]):
+    pass
+"#;
+    // BUG: a specialized `ParamSpec` signature removes the whole action.
+    assert_eq!(
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child("),
+        None
+    );
+    assert_eq!(
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child2"),
+        None
+    );
+}
+
+#[test]
+fn implement_abstract_members_specialized_param_spec_after_default() {
+    let code = r#"
+from abc import ABC, abstractmethod
+class Base[**P](ABC):
+    @abstractmethod
+    def f(self, x: int = 0, *args: P.args, **kwargs: P.kwargs) -> None: ...
+class Child(Base[[str]]):
+    pass
+"#;
+    // BUG: a specialized `ParamSpec` signature removes the whole action.
+    assert_eq!(
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child"),
+        None
+    );
+}
+
+#[test]
+fn implement_abstract_members_legacy_type_var_before_python_3_12() {
+    let base = r#"
+from abc import ABC, abstractmethod
+from typing import TypeVar
+T = TypeVar("T")
+class Base(ABC):
+    @abstractmethod
+    def f(self, x: T) -> T: ...
+"#;
+    let code = "from base import Base\nclass Child(Base):\n    pass\n";
+    let after = implement_abstract_members_at(
+        TestEnv::new_with_version(PythonVersion::new(3, 11, 0)),
+        &[("base", base), ("main", code)],
+        "class Child",
+    )
+    .unwrap();
+    // BUG: PEP 695 syntax is a syntax error before Python 3.12.
+    assert_eq!(
+        after,
+        "from base import Base\nclass Child(Base):\n    def f[T](self, x: T) -> T:\n        raise NotImplementedError\n"
+    );
+}
+
+#[test]
+fn implement_abstract_members_async_generator() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import AsyncIterator
+class Base(ABC):
+    @abstractmethod
+    async def items(self) -> AsyncIterator[int]:
+        yield 1
+class Child(Base):
+    pass
+"#;
+    let after =
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child").unwrap();
+    // BUG: without a `yield`, the generated `async def` is a coroutine, not an async generator.
+    assert!(
+        after.ends_with(
+            "class Child(Base):\n    async def items(self) -> AsyncIterator[int]:\n        raise NotImplementedError\n"
+        ),
+        "{after}"
+    );
+}
+
+#[test]
+fn implement_abstract_members_type_params_only_in_return() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import Callable
+class Base(ABC):
+    @abstractmethod
+    def factory[T](self) -> Callable[[T], T]: ...
+    @abstractmethod
+    def mixed[T, U = int](self, value: U) -> Callable[[T], T]: ...
+    @abstractmethod
+    def nested[T](self) -> Callable[[], Callable[[T], T]]: ...
+class Child(Base):
+    pass
+"#;
+    let after =
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child").unwrap();
+    // BUG: `T` is no longer declared by the generated methods.
+    assert!(
+        after.ends_with(
+            "class Child(Base):\n    def factory(self) -> Callable[[T], T]:\n        raise NotImplementedError\n\n    def mixed[U = int](self, value: U) -> Callable[[T], T]:\n        raise NotImplementedError\n\n    def nested(self) -> Callable[[], Callable[[T], T]]:\n        raise NotImplementedError\n"
+        ),
+        "{after}"
+    );
+}
+
+#[test]
+fn implement_abstract_members_module_name_bound_locally() {
+    let base = r#"
+from abc import ABC, abstractmethod
+class Payload: pass
+class Base(ABC):
+    @abstractmethod
+    def foo(self, value: Payload) -> None: ...
+    @abstractmethod
+    def bar(self) -> int: ...
+"#;
+    let code =
+        "from base import Base\nclass Payload: pass\nbase = 42\nclass Child(Base):\n    pass\n";
+    let after = implement_abstract_members_at(
+        TestEnv::new(),
+        &[("base", base), ("main", code)],
+        "class Child",
+    )
+    .unwrap();
+    // BUG: `base = 42` rebinds the imported module before `base.Payload` is evaluated.
+    assert_eq!(
+        after,
+        "import base\nfrom base import Base\nclass Payload: pass\nbase = 42\nclass Child(Base):\n    def bar(self) -> int:\n        raise NotImplementedError\n\n    def foo(self, value: base.Payload) -> None:\n        raise NotImplementedError\n"
+    );
+}
+
+#[test]
+fn implement_abstract_members_layout() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import overload
+class Base(ABC):
+    @overload
+    @classmethod
+    @abstractmethod
+    def make(cls, x: int) -> int: ...
+    @overload
+    @classmethod
+    @abstractmethod
+    def make(cls, x: str) -> str: ...
+    @property
+    @abstractmethod
+    def value(self) -> int:
+        """Value doc."""
+    @value.setter
+    @abstractmethod
+    def value(self, value: int) -> None: ...
+class Child(Base):
+    existing = 1
+"#;
+    let after =
+        implement_abstract_members_at(TestEnv::new(), &[("main", code)], "class Child").unwrap();
+    let child = &after[after.find("class Child").unwrap()..];
+    // BUG: the overload implementation follows two blank lines, the setter repeats the
+    // getter's docstring, and no blank line separates the stubs from `existing`.
+    assert_eq!(
+        child,
+        r#"class Child(Base):
+    @overload
+    @classmethod
+    def make(cls, x: int) -> int:
+        ...
+
+    @overload
+    @classmethod
+    def make(cls, x: str) -> str:
+        ...
+
+
+    @classmethod
+    def make(cls, *args, **kwargs) -> Any:
+        raise NotImplementedError
+
+    @property
+    def value(self) -> int:
+        """Value doc."""
+        raise NotImplementedError
+
+    @value.setter
+    def value(self, value: int) -> None:
+        """Value doc."""
+        raise NotImplementedError
+    existing = 1
+"#
+    );
+}
+
+#[test]
+fn implement_abstract_members_cursor_scope() {
+    let code = r#"
+from abc import ABC, abstractmethod
+from typing import Protocol
+class Base(ABC):
+    @abstractmethod
+    def foo(self) -> int: ...
+class Child(Base):
+    value = 1
+class Proto(Protocol):
+    def bar(self) -> int: ...
+class SubProto(Proto, Protocol):
+    pass
+"#;
+    let offered =
+        |cursor| implement_abstract_members_at(TestEnv::new(), &[("main", code)], cursor).is_some();
+    assert!(offered("class Child"));
+    // BUG: the action is also offered in the class body, where it runs on every cursor move.
+    assert!(offered("value = 1"));
+    // BUG: implementing members turns a protocol's members into concrete defaults.
+    assert!(offered("class SubProto"));
 }
 
 #[test]

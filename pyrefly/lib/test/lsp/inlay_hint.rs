@@ -1348,6 +1348,112 @@ value = make()
 }
 
 #[test]
+fn test_insertable_hint_module_name_bound_at_module_scope() {
+    let (annotation, imports) = insertable_hint(&[
+        LIB,
+        (
+            "main",
+            r#"
+from lib import make
+
+class Value: ...
+lib = 1
+value = make()
+"#,
+        ),
+    ]);
+    // BUG: `lib = 1` rebinds the imported module before the annotation is evaluated.
+    assert_eq!(annotation, ": lib.Value");
+    assert_eq!(imports, "import lib\n");
+}
+
+#[test]
+fn test_insertable_hint_overloaded_function() {
+    let (annotation, imports) = insertable_hint(&[(
+        "main",
+        r#"
+from typing import overload
+
+@overload
+def f(x: int) -> int: ...
+@overload
+def f(x: str) -> str: ...
+def f(x: int | str) -> int | str:
+    return x
+
+g = f
+"#,
+    )]);
+    // BUG: the annotation keeps only the first overload.
+    assert_eq!(annotation, ": Callable[[int], int]");
+    assert_eq!(imports, "from typing import Callable\n");
+}
+
+#[test]
+fn test_insertable_hint_generic_function() {
+    let (annotation, imports) = insertable_hint(&[(
+        "main",
+        r#"
+def identity[T](x: T) -> T:
+    return x
+
+g = identity
+"#,
+    )]);
+    // BUG: the annotation cannot declare `T`, so it is undefined where the hint is inserted.
+    assert_eq!(annotation, ": Callable[[T], T]");
+    assert_eq!(imports, "from typing import Callable\n");
+}
+
+#[test]
+fn test_insertable_hint_generic_function_with_default() {
+    let (annotation, imports) = insertable_hint(&[(
+        "main",
+        r#"
+def identity[T = int](x: T) -> T:
+    return x
+
+g = identity
+"#,
+    )]);
+    // BUG: the annotation cannot declare `T`, so it is undefined where the hint is inserted.
+    assert_eq!(annotation, ": Callable[[T], T]");
+    assert_eq!(imports, "from typing import Callable\n");
+}
+
+#[test]
+fn test_insertable_hint_param_spec_with_default() {
+    let (annotation, imports) = insertable_hint(&[(
+        "main",
+        r#"
+def f[**P](x: int = 0, *args: P.args, **kwargs: P.kwargs) -> int:
+    return x
+
+g = f
+"#,
+    )]);
+    // BUG: `P` is undefined where the hint is inserted, and `x` becomes required.
+    assert_eq!(annotation, ": Callable[Concatenate[int, P], int]");
+    assert_eq!(imports, "from typing import Callable, Concatenate\n");
+}
+
+#[test]
+fn test_insertable_hint_function_with_default() {
+    let (annotation, imports) = insertable_hint(&[(
+        "main",
+        r#"
+def f(x: int = 0) -> int:
+    return x
+
+g = f
+"#,
+    )]);
+    // BUG: the annotation requires `x`, so calling `g()` becomes an error.
+    assert_eq!(annotation, ": Callable[[int], int]");
+    assert_eq!(imports, "from typing import Callable\n");
+}
+
+#[test]
 fn test_insertable_hint_renders_unknown_as_any() {
     let (annotation, imports) = insertable_hint(&[
         (
