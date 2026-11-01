@@ -3227,7 +3227,7 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                         errors,
                     )
                 }
-                Some(CalleeKind::Function(FunctionKind::SqlAlchemyMappedColumn)) => self
+                Some(CalleeKind::Function(FunctionKind::SqlAlchemyMappedColumn(_))) => self
                     .call_sqlalchemy_mapped_column(
                         ty.clone(),
                         &args,

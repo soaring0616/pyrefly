@@ -1586,7 +1586,9 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
             && let Some(default) = mutable_default
             && matches!(
                 callee_kind,
-                Some(CalleeKind::Function(FunctionKind::SqlAlchemyMappedColumn))
+                Some(CalleeKind::Function(FunctionKind::SqlAlchemyMappedColumn(
+                    _
+                )))
             )
         {
             self.error(
