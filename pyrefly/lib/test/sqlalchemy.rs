@@ -57,27 +57,39 @@ class Float(TypeEngine[float]):
 class GenericType(TypeEngine[_T], Generic[_T]):
     ...
 
-class Enum(TypeEngine[str | PythonEnum]):
-    def __init__(self, enum_class: type[PythonEnum]) -> None:
+# SQLAlchemy itself inherits these conflicting TypeEngine arguments.
+class Enum(String, TypeEngine[str | PythonEnum]):  # E: Class `Enum` has inconsistent type arguments
+    def __init__(self, *enums: str | type[PythonEnum]) -> None:
         ...
+"#,
+    );
+    env.add_with_path(
+        "sqlalchemy.orm.attributes",
+        "sqlalchemy/orm/attributes.py",
+        r#"
+class InstrumentedAttribute[T]: ...
 "#,
     );
     env.add_with_path(
         "sqlalchemy.orm.base",
         "sqlalchemy/orm/base.py",
         r#"
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
+from .attributes import InstrumentedAttribute
 
 _T = TypeVar("_T")
 
-class Mapped(Generic[_T]):
-    ...
+class _MappedAnnotationBase(Generic[_T]): ...
 
-class _MappedAnnotationBase(Mapped[_T]):
-    ...
+class Mapped(_MappedAnnotationBase[_T]):
+    @overload
+    def __get__(self, instance: None, owner: Any) -> InstrumentedAttribute[_T]: ...
+    @overload
+    def __get__(self, instance: object, owner: Any) -> _T: ...
+    def __get__(self, instance: object | None, owner: Any) -> InstrumentedAttribute[_T] | _T: ...
+    def __set__(self, instance: object, value: _T) -> None: ...
 
-class _DeclarativeMapped(_MappedAnnotationBase[_T]):
-    ...
+class _DeclarativeMapped(Mapped[_T]): ...
 "#,
     );
     env.add_with_path(
@@ -97,22 +109,33 @@ class MappedColumn(_DeclarativeMapped[_T]):
 "#,
     );
     env.add_with_path(
-        "sqlalchemy.orm",
-        "sqlalchemy/orm/__init__.py",
+        "sqlalchemy.orm._orm_constructors",
+        "sqlalchemy/orm/_orm_constructors.py",
         r#"
 from typing import Any
 from sqlalchemy.sql.type_api import TypeEngine
-from .base import Mapped
 from .properties import MappedColumn
 
-__all__ = ["Mapped", "MappedColumn", "mapped_column"]
-
 def mapped_column(
-    type_: TypeEngine[Any] | type[TypeEngine[Any]] | None = None,
+    __name_pos: str | TypeEngine[Any] | type[TypeEngine[Any]] | None = None,
+    __type_pos: TypeEngine[Any] | type[TypeEngine[Any]] | None = None,
     *args: Any,
+    type_: TypeEngine[Any] | type[TypeEngine[Any]] | None = None,
+    nullable: bool | None = None,
+    primary_key: bool | None = False,
     **kw: Any,
 ) -> MappedColumn[Any]:
     return MappedColumn()
+"#,
+    );
+    env.add_with_path(
+        "sqlalchemy.orm",
+        "sqlalchemy/orm/__init__.py",
+        r#"
+from ._orm_constructors import mapped_column as mapped_column
+from .attributes import InstrumentedAttribute as InstrumentedAttribute
+from .base import Mapped as Mapped
+from .properties import MappedColumn as MappedColumn
 "#,
     );
     env
@@ -123,7 +146,7 @@ testcase!(
     sqlalchemy_env(),
     r#"
 from typing import assert_type
-from sqlalchemy.orm import MappedColumn, mapped_column
+from sqlalchemy.orm import InstrumentedAttribute, MappedColumn, mapped_column
 from sqlalchemy.sql.sqltypes import Integer, String
 
 class Model:
@@ -133,16 +156,22 @@ class Model:
     pk = mapped_column(Integer, primary_key=True)
     nullable_pk = mapped_column(Integer, primary_key=True, nullable=True)
 
-assert_type(Model.name, MappedColumn[str | None])
-assert_type(Model.quantity, MappedColumn[int | None])
-assert_type(Model.sku, MappedColumn[str])
-assert_type(Model.pk, MappedColumn[int])
-assert_type(Model.nullable_pk, MappedColumn[int | None])
+assert_type(Model.name, InstrumentedAttribute[str | None])
+assert_type(Model.quantity, InstrumentedAttribute[int | None])
+assert_type(Model.sku, InstrumentedAttribute[str])
+assert_type(Model.pk, InstrumentedAttribute[int])
+assert_type(Model.nullable_pk, InstrumentedAttribute[int | None])
+assert_type(Model().name, str | None)
+assert_type(Model().quantity, int | None)
+assert_type(Model().sku, str)
+assert_type(Model().pk, int)
+assert_type(Model().nullable_pk, int | None)
+
+assert_type(mapped_column("sku", String(), nullable=False), MappedColumn[str])
+assert_type(mapped_column(type_=String(), nullable=False), MappedColumn[str])
 
 def make_column() -> MappedColumn[str | None]:
-    result = mapped_column(String())
-    result.column
-    return result
+    return mapped_column(String())
 "#,
 );
 
@@ -182,7 +211,7 @@ testcase!(
     sqlalchemy_env(),
     r#"
 from typing import Literal, assert_type
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import InstrumentedAttribute, Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import Float, Integer, String
 
 Key = Literal["api_key", "api_secret"]
@@ -193,9 +222,75 @@ class Model:
     ratio: Mapped[float] = mapped_column(Float(), nullable=False)
     maybe_ratio: Mapped[float | None] = mapped_column(Float())
 
-assert_type(Model.key, Mapped[Key])
-assert_type(Model.quantity, Mapped[int])
-assert_type(Model.ratio, Mapped[float])
-assert_type(Model.maybe_ratio, Mapped[float | None])
+assert_type(Model.key, InstrumentedAttribute[Key])
+assert_type(Model.quantity, InstrumentedAttribute[int])
+assert_type(Model.ratio, InstrumentedAttribute[float])
+assert_type(Model.maybe_ratio, InstrumentedAttribute[float | None])
+assert_type(Model().key, Key)
+assert_type(Model().quantity, int)
+assert_type(Model().ratio, float)
+assert_type(Model().maybe_ratio, float | None)
+"#,
+);
+
+testcase!(
+    bug = "Stored Enum instances inherit a string-only TypeEngine argument",
+    test_sqlalchemy_mapped_column_stored_enum,
+    sqlalchemy_env(),
+    r#"
+from enum import Enum as PythonEnum
+from typing import assert_type
+from sqlalchemy.orm import mapped_column
+from sqlalchemy.sql.sqltypes import Enum
+
+class Color(PythonEnum):
+    RED = "red"
+
+color_type = Enum(Color)
+class Model:
+    color = mapped_column(color_type, nullable=False)
+
+assert_type(Model().color, str)
+"#,
+);
+
+testcase!(
+    bug = "Nonliteral nullable flags are mistaken for omitted flags",
+    test_sqlalchemy_mapped_column_nullable_flags,
+    sqlalchemy_env(),
+    r#"
+from typing import Literal, assert_type
+from sqlalchemy.orm import MappedColumn, mapped_column
+from sqlalchemy.sql.sqltypes import String
+
+TRUE: Literal[True] = True
+FALSE: Literal[False] = False
+assert_type(mapped_column(String, primary_key=True, nullable=TRUE), MappedColumn[str])
+assert_type(mapped_column(String, nullable=FALSE), MappedColumn[str | None])
+assert_type(mapped_column(String, primary_key=TRUE), MappedColumn[str | None])
+assert_type(mapped_column(String, primary_key=True, **{"nullable": True}), MappedColumn[str])
+
+def make(nullable: bool, primary_key: bool) -> None:
+    assert_type(mapped_column(String, primary_key=True, nullable=nullable), MappedColumn[str])
+    assert_type(mapped_column(String, primary_key=primary_key), MappedColumn[str | None])
+    assert_type(mapped_column(String, nullable=False, primary_key=primary_key), MappedColumn[str])
+    assert_type(mapped_column(String, primary_key=True, nullable=None), MappedColumn[str])
+"#,
+);
+
+testcase!(
+    bug = "Union extraction drops gradual alternatives",
+    test_sqlalchemy_mapped_column_gradual_union,
+    sqlalchemy_env(),
+    r#"
+from typing import Any, assert_type
+from sqlalchemy.orm import MappedColumn, mapped_column
+from sqlalchemy.sql.sqltypes import Integer, String
+
+def make(type_: Integer | Any) -> None:
+    assert_type(mapped_column(type_, nullable=False), MappedColumn[int])
+
+def known(type_: Integer | String) -> None:
+    assert_type(mapped_column(type_, nullable=False), MappedColumn[int | str])
 "#,
 );
