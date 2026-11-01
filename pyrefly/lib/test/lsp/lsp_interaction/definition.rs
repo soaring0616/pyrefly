@@ -340,8 +340,7 @@ fn goto_definition_refreshes_disk_copy_of_open_destination() {
     interaction
         .client
         .definition("foo.py", 1, 10)
-        // Known bug: the filesystem copy remains stale while the destination is open.
-        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .expect_definition_response_from_root("bar.py", 1, 0, 1, 6)
         .unwrap();
     interaction
         .client
@@ -361,8 +360,7 @@ fn goto_definition_refreshes_disk_copy_of_open_destination() {
     interaction
         .client
         .definition("foo.py", 1, 10)
-        // Known bug: another disk edit still cannot refresh this open destination.
-        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .expect_definition_response_from_root("bar.py", 2, 0, 2, 6)
         .unwrap();
     interaction
         .client

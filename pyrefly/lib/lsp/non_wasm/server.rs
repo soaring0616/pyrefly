@@ -5048,12 +5048,12 @@ impl Server {
             self.from_lsp_position(uri, &info, params.text_document_position_params.position);
         let mut targets = transaction.goto_definition(&handle, range)?;
 
-        // Client positions refer to open buffers. Only closed destinations can be
-        // refreshed from disk without changing the meaning of those positions.
+        // Filesystem modules are independent of editor buffers. Keep the request
+        // module unchanged because `range` refers to its current contents.
         let mut changed = SmallSet::new();
         for target in &targets {
             if let ModulePathDetails::FileSystem(path) = target.module.path().details()
-                && !self.open_files.read().contains_key(path.as_path())
+                && target.module.path() != handle.path()
                 && !target.module.is_notebook()
                 && let Ok(contents) = fs_anyhow::read_to_string(path)
                 && contents.as_str() != target.module.contents().as_str()
