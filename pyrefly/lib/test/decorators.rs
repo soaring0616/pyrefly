@@ -2491,3 +2491,262 @@ A.created  # E: Instance-only attribute `created`
 A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
+
+// Special-export aliases must preserve the values captured by their RHS expressions.
+testcase!(
+    bug = "Alias lookup follows a later rebinding of its RHS name",
+    test_desugared_provenance_constructor_alias,
+    r#"
+from typing import Self, assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+class A:
+    decorate = identity
+    identity = classmethod
+    def f(self):
+        assert_type(self, Self)  # E: assert_type
+        return self
+    f = decorate(f)
+
+assert_type(A().f(), A)  # E: assert_type  # E: Argument
+"#,
+);
+
+testcase!(
+    bug = "Helper certification follows a later alias rebinding",
+    test_desugared_provenance_helper_alias,
+    r#"
+from typing import assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+class A:
+    decorate = identity
+    identity = classmethod
+    @decorate
+    def helper(self):
+        return self
+    def f(self):
+        return self.helper()  # E: Missing argument `self`
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), A)
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A special-export Phi ignores unknown alternatives",
+    test_desugared_provenance_partial_phi,
+    r#"
+from typing import Self, assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+flag: bool = bool()
+class A:
+    if flag:
+        decorate = classmethod
+    else:
+        decorate = identity
+    def f(self):
+        assert_type(self, Self)  # E: assert_type
+        return self
+    f = decorate(f)
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_agreeing_phi,
+    r#"
+from typing import Self, assert_type
+
+cm = classmethod
+flag: bool = bool()
+class A:
+    if flag:
+        decorate = cm
+    else:
+        decorate = cm
+    def f(cls):
+        assert_type(cls, Self)  # E: assert_type
+        return cls
+    f = decorate(f)
+A.f()
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_distinct_import_phi,
+    r#"
+from typing import Self, assert_type
+
+flag: bool = bool()
+class A:
+    if flag:
+        from builtins import classmethod as decorate
+    else:
+        from builtins import classmethod as decorate
+    def f(cls):
+        assert_type(cls, type[Self])
+        return cls
+    f = decorate(f)
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_same_name_alias,
+    r#"
+from typing import Self, assert_type
+
+class A:
+    decorate = classmethod
+    decorate = decorate
+    def f(cls):
+        assert_type(cls, Self)
+        return cls
+    f = decorate(f)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_module_alias,
+    r#"
+import builtins as b
+from typing import Self, assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+class A:
+    decorate = b.classmethod
+    b = identity
+    def f(cls):
+        assert_type(cls, Self)
+        return cls
+    f = decorate(f)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_large_agreeing_diamond,
+    r#"
+from typing import Self, assert_type
+
+flag: bool = bool()
+a0 = classmethod
+class A:
+    if flag: a1 = a0
+    else: a1 = a0
+    if flag: a2 = a1
+    else: a2 = a1
+    if flag: a3 = a2
+    else: a3 = a2
+    if flag: a4 = a3
+    else: a4 = a3
+    if flag: a5 = a4
+    else: a5 = a4
+    if flag: a6 = a5
+    else: a6 = a5
+    if flag: a7 = a6
+    else: a7 = a6
+    if flag: a8 = a7
+    else: a8 = a7
+    if flag: a9 = a8
+    else: a9 = a8
+    if flag: a10 = a9
+    else: a10 = a9
+    if flag: a11 = a10
+    else: a11 = a10
+    if flag: a12 = a11
+    else: a12 = a11
+    if flag: a13 = a12
+    else: a13 = a12
+    if flag: a14 = a13
+    else: a14 = a13
+    if flag: a15 = a14
+    else: a15 = a14
+    if flag: a16 = a15
+    else: a16 = a15
+    if flag: a17 = a16
+    else: a17 = a16
+    if flag: a18 = a17
+    else: a18 = a17
+    if flag: a19 = a18
+    else: a19 = a18
+    if flag: a20 = a19
+    else: a20 = a19
+    if flag: a21 = a20
+    else: a21 = a20
+    if flag: a22 = a21
+    else: a22 = a21
+    if flag: a23 = a22
+    else: a23 = a22
+    if flag: a24 = a23
+    else: a24 = a23
+    if flag: a25 = a24
+    else: a25 = a24
+    if flag: a26 = a25
+    else: a26 = a25
+    if flag: a27 = a26
+    else: a27 = a26
+    if flag: a28 = a27
+    else: a28 = a27
+    if flag: a29 = a28
+    else: a29 = a28
+    if flag: a30 = a29
+    else: a30 = a29
+    if flag: a31 = a30
+    else: a31 = a30
+    if flag: a32 = a31
+    else: a32 = a31
+    def f(cls):
+        assert_type(cls, Self)  # E: assert_type
+        return cls
+    f = a32(f)
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A special-export Phi ignores differing module attributes",
+    test_desugared_provenance_attribute_sensitive_diamond,
+    r#"
+import builtins as b
+from typing import Self, assert_type
+
+flag: bool = bool()
+class A:
+    if flag:
+        decorate = b.classmethod
+    else:
+        decorate = b.staticmethod
+    def f(self):
+        assert_type(self, Self)  # E: assert_type
+        return self
+    f = decorate(f)
+"#,
+);
+
+testcase!(
+    test_desugared_provenance_direct_module_import,
+    r#"
+import builtins as b
+from typing import Self, assert_type
+
+class A:
+    def f(cls):
+        assert_type(cls, type[Self])
+        return cls
+    f = b.classmethod(f)
+
+assert_type(A.f(), type[A])
+"#,
+);
