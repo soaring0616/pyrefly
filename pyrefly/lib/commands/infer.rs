@@ -1113,6 +1113,105 @@ def callbacks():
     }
 
     #[test]
+    fn test_imports_reuse_callable_reexport() {
+        let input = "from collections.abc import Callable\ndef g(x: int) -> int:\n    return x\ndef f():\n    return g\n";
+        // BUG: A safe re-export is mistaken for a conflicting binding.
+        assert_annotations(input, input, None);
+    }
+
+    #[test]
+    fn test_imports_reuse_self_reexport() {
+        let input = "from typing_extensions import Self\nclass A:\n    def __new__(cls):\n        return object.__new__(cls)\n";
+        let mut flags = InferFlags::default();
+        flags.parameter_types = Some(false);
+        // BUG: Equivalent special forms from another module are rejected.
+        assert_annotations(input, input, Some(flags));
+    }
+
+    #[test]
+    fn test_imports_reject_unrelated_callable() {
+        for source in ["file_two", "missing_module"] {
+            let input = format!(
+                "from {source} import Callable as Callable\ndef g(x: int) -> int:\n    return x\ndef f():\n    return g\n"
+            );
+            assert_imports_and_annotations(&input, "class Callable: pass\n", &input);
+        }
+    }
+
+    #[test]
+    fn test_imports_do_not_reuse_same_module_as_class() {
+        let input = "import datetime as datetime\ndef f():\n    return datetime.datetime.now()\n";
+        // BUG: An identical module alias is mistaken for its same-named class.
+        let expected = input.replace("def f():", "def f() -> datetime:");
+        assert_annotations(input, &expected, None);
+    }
+
+    #[test]
+    fn test_imports_do_not_reuse_module_as_class() -> anyhow::Result<()> {
+        let tdir = tempfile::tempdir()?;
+        fs_anyhow::write(
+            &tdir.path().join("implementation.py"),
+            "class facade: pass\ndef make() -> facade:\n    return facade()\n",
+        )?;
+        fs_anyhow::write(
+            &tdir.path().join("facade.py"),
+            "from implementation import facade as facade, make as make\n",
+        )?;
+        let path = tdir.path().join("main.py");
+        let input = "import facade as facade\ndef f():\n    return facade.make()\n";
+        fs_anyhow::write(&path, input)?;
+        let path_arg = path.display().to_string();
+        let status = InferArgs::parse_from([
+            "infer",
+            path_arg.as_str(),
+            "--parameter-types=false",
+            "--skip-interpreter-query",
+        ])
+        .run(None, TEST_THREAD_COUNT)?;
+        assert_eq!(status, CommandExitStatus::Success);
+        assert_str_eq!(fs_anyhow::read_to_string(&path)?, input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_imports_reuse_class_reexport() -> anyhow::Result<()> {
+        let tdir = tempfile::tempdir()?;
+        fs_anyhow::write(
+            &tdir.path().join("implementation.py"),
+            "class Foo: pass\ndef make() -> Foo:\n    return Foo()\n",
+        )?;
+        fs_anyhow::write(
+            &tdir.path().join("facade.py"),
+            "from implementation import Foo as Foo, make as make\n",
+        )?;
+        fs_anyhow::write(&tdir.path().join("other.py"), "class Foo: pass\n")?;
+        let path = tdir.path().join("main.py");
+        let path_arg = path.display().to_string();
+        for (source, alias) in [
+            ("facade", ""),
+            ("facade", " as Foo"),
+            ("other", ""),
+            ("other", " as Foo"),
+        ] {
+            let input = format!(
+                "from {source} import Foo{alias}\nfrom facade import make\ndef foo():\n    return make()\n"
+            );
+            fs_anyhow::write(&path, &input)?;
+            let status = InferArgs::parse_from([
+                "infer",
+                path_arg.as_str(),
+                "--parameter-types=false",
+                "--skip-interpreter-query",
+            ])
+            .run(None, TEST_THREAD_COUNT)?;
+            assert_eq!(status, CommandExitStatus::Success);
+            // BUG: The facade binding should be reusable; the unrelated class must not be.
+            assert_str_eq!(fs_anyhow::read_to_string(&path)?, input);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_imports_preserve_existing_alias_bindings() {
         let input = r#"from file_two import marker as Foo, make
 def foo():
