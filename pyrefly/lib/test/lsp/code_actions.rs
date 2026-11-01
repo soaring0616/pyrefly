@@ -11,6 +11,7 @@ use pretty_assertions::assert_eq;
 use pyrefly_build::handle::Handle;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::Module;
+use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::sys_info::PythonVersion;
 use ruff_python_ast::PySourceType;
 use ruff_text_size::Ranged;
@@ -2550,6 +2551,29 @@ fn insertion_test_import_merge_styles() {
             &edit.insert_text,
         );
         assert_eq!(actual, expected, "input: {input:?}");
+    }
+}
+
+#[test]
+fn import_merge_binding_order() {
+    // BUG: Merging into a later statement can overwrite an earlier import binding.
+    for prefix in [
+        "from a import marker as Foo\n",
+        "from other import Foo\n",
+        "import other as Foo\n",
+        "import Foo.bar\n",
+        "from other import *\n",
+    ] {
+        let source = format!("{prefix}from a import make\n");
+        let (ast, errors, _) = Ast::parse(&source, PySourceType::Python);
+        assert!(errors.is_empty(), "{errors:?}");
+        let edit = insert_from_import_edit(&ast, ModuleName::from_str("a"), "Foo");
+        let mut actual = source;
+        actual.replace_range(
+            edit.range.start().to_usize()..edit.range.end().to_usize(),
+            &edit.insert_text,
+        );
+        assert_eq!(actual, format!("{prefix}from a import make, Foo\n"));
     }
 }
 
@@ -6832,6 +6856,44 @@ class Child(Base):
         return 2
 "#;
     assert!(apply_first_safe_delete_action(code).is_none());
+}
+
+#[test]
+fn pytest_fixture_annotation_import_binding_order() {
+    let dependency = "class Foo: pass\nmarker = 17\ndef make() -> Foo:\n    return Foo()\n";
+    let code = "import pytest\nfrom file_two import marker as Foo\nfrom file_two import make\n\n@pytest.fixture\ndef item():\n    return make()\n\nassert Foo == 17\n";
+    let (handles, state) = mk_multi_file_state_assert_no_errors(
+        &[
+            ("main", code),
+            ("file_two", dependency),
+            ("pytest", "def fixture(f):\n    return f\n"),
+        ],
+        Require::Everything,
+    );
+    let handle = handles.get("main").unwrap();
+    let transaction = state.transaction();
+    let module_info = transaction.get_module_info(handle).unwrap();
+    let cursor = TextSize::try_from(code.find("def item").unwrap()).unwrap();
+    let actions = transaction
+        .pytest_fixture_type_annotation_code_actions(
+            handle,
+            TextRange::empty(cursor),
+            ImportFormat::Absolute,
+        )
+        .unwrap_or_default();
+    let action = actions
+        .iter()
+        .find(|action| action.title == "Add pytest fixture type annotation")
+        .expect("missing fixture annotation action");
+    let actual = apply_refactor_edits_for_module(&module_info, &action.edits);
+    // BUG: The generated import overwrites the existing `Foo == 17` binding.
+    let expected = code
+        .replace(
+            "from file_two import make\n",
+            "from file_two import make, Foo\n",
+        )
+        .replace("def item():", "def item() -> Foo:");
+    assert_eq!(actual, expected);
 }
 
 #[test]
