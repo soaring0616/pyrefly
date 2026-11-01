@@ -15,11 +15,9 @@ use pyrefly_python::dunder;
 use pyrefly_types::shaped_array::IntTuple;
 use pyrefly_types::shaped_array::IntTupleView;
 use pyrefly_types::shaped_array::is_tuple_carrier_shape_middle;
-use pyrefly_types::type_alias::TypeAliasData;
 use pyrefly_util::visit::Visit;
 use pyrefly_util::visit::VisitMut;
 use ruff_python_ast::Expr;
-use ruff_python_ast::ExprCall;
 use ruff_python_ast::Keyword;
 use ruff_python_ast::name::Name;
 use ruff_text_size::Ranged;
@@ -42,9 +40,7 @@ use crate::types::callable::Param;
 use crate::types::callable::Params;
 use crate::types::callable::unexpected_keyword;
 use crate::types::class::Class;
-use crate::types::class::ClassType;
 use crate::types::function::FunctionKind;
-use crate::types::literal::Lit;
 use crate::types::tuple::Tuple;
 use crate::types::types::Forallable;
 use crate::types::types::Type;
@@ -527,173 +523,6 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
             }
         }
         ret
-    }
-
-    pub fn call_sqlalchemy_mapped_column(
-        &self,
-        callee_ty: Type,
-        args: &[CallArg],
-        keywords: &[CallKeyword],
-        callee_range: TextRange,
-        arg_range: TextRange,
-        call: &ExprCall,
-        hint: Option<HintRef>,
-        errors: &ErrorCollector,
-    ) -> Type {
-        let ret = self
-            .freeform_call_infer(
-                callee_ty,
-                args,
-                keywords,
-                callee_range,
-                arg_range,
-                hint,
-                errors,
-            )
-            .ty;
-        if keywords.iter().any(|keyword| keyword.arg.is_none())
-            || hint.is_some_and(|hint| {
-                hint.types()
-                    .iter()
-                    .any(|ty| self.is_sqlalchemy_mapped_hint(ty))
-            })
-        {
-            return ret;
-        }
-        let Some(mut python_type) = self.sqlalchemy_mapped_column_python_type(call) else {
-            return ret;
-        };
-        if self.sqlalchemy_mapped_column_is_nullable(call) {
-            python_type = Type::optional(python_type);
-        }
-        self.apply_sqlalchemy_mapped_python_type(ret, python_type)
-    }
-
-    fn sqlalchemy_mapped_column_python_type(&self, call: &ExprCall) -> Option<Type> {
-        // Check up to the first two positional arguments for a SQLAlchemy TypeEngine-derived column type.
-        for expr in call.arguments.args.iter().take(2) {
-            if let Some(ty) = self.python_type_from_type_engine_expr(expr) {
-                return Some(ty);
-            }
-        }
-        for keyword in &call.arguments.keywords {
-            if let Some(arg) = &keyword.arg
-                && matches!(arg.as_str(), "type_")
-                && let Some(ty) = self.python_type_from_type_engine_expr(&keyword.value)
-            {
-                return Some(ty);
-            }
-        }
-        None
-    }
-
-    fn sqlalchemy_mapped_column_is_nullable(&self, call: &ExprCall) -> bool {
-        let errors = self.error_swallower();
-        if let Some(nullable) = call.arguments.find_keyword("nullable") {
-            // Only a known false flag rules out null values.
-            return !matches!(
-                self.expr_infer(&nullable.value, &errors),
-                Type::Literal(literal) if literal.value == Lit::Bool(false)
-            );
-        }
-        !call
-            .arguments
-            .find_keyword("primary_key")
-            .is_some_and(|primary_key| {
-                matches!(
-                    self.expr_infer(&primary_key.value, &errors),
-                    Type::Literal(literal) if literal.value == Lit::Bool(true)
-                )
-            })
-    }
-
-    fn python_type_from_type_engine_expr(&self, expr: &Expr) -> Option<Type> {
-        if let Expr::Call(call) = expr
-            && matches!(
-                self.expr_infer(&call.func, &self.error_swallower()),
-                Type::ClassDef(cls)
-                    if cls.has_toplevel_qname("sqlalchemy.sql.sqltypes", "Enum")
-            )
-            && let Some(enum_class) = call.arguments.args.first()
-        {
-            let enum_class = self.expr_infer(enum_class, &self.error_swallower());
-            return match enum_class {
-                Type::ClassDef(cls) => Some(self.promote_silently(&cls)),
-                Type::Type(instance) => Some(*instance),
-                _ => None,
-            };
-        }
-        let ty = self.expr_infer(expr, &self.error_swallower());
-        self.python_type_from_type_engine_type(&ty)
-    }
-
-    fn python_type_from_type_engine_type(&self, ty: &Type) -> Option<Type> {
-        match ty {
-            Type::ClassType(cls) => self.python_type_from_type_engine_class(cls),
-            Type::ClassDef(cls) => {
-                let inst = self.promote_silently(cls);
-                self.python_type_from_type_engine_type(&inst)
-            }
-            Type::Type(inner) => self.python_type_from_type_engine_type(inner),
-            Type::TypeAlias(alias) => match alias.as_ref() {
-                TypeAliasData::Value(alias) => {
-                    self.python_type_from_type_engine_type(&alias.as_type())
-                }
-                TypeAliasData::Ref(_) => {
-                    self.python_type_from_type_engine_type(&self.untype_alias(alias))
-                }
-            },
-            Type::Union(u) => {
-                let inferred = u
-                    .members
-                    .iter()
-                    .map(|member| self.python_type_from_type_engine_type(member))
-                    .collect::<Option<Vec<_>>>()?;
-                Some(self.unions(inferred))
-            }
-            _ => None,
-        }
-    }
-
-    fn python_type_from_type_engine_class(&self, cls: &ClassType) -> Option<Type> {
-        let mro = self.get_mro_for_class(cls.class_object());
-        // Enum's String base does not describe its Python enum values.
-        if cls.has_qname("sqlalchemy.sql.sqltypes", "Enum")
-            || mro
-                .ancestors_no_object()
-                .iter()
-                .any(|ancestor| ancestor.has_qname("sqlalchemy.sql.sqltypes", "Enum"))
-        {
-            return None;
-        }
-        let type_engine = mro.ancestors(self.stdlib).find(|ancestor| {
-            ancestor
-                .class_object()
-                .has_toplevel_qname("sqlalchemy.sql.type_api", "TypeEngine")
-        })?;
-        self.as_superclass(cls, type_engine.class_object())?
-            .targs()
-            .as_slice()
-            .first()
-            .cloned()
-    }
-
-    fn apply_sqlalchemy_mapped_python_type(&self, mut ty: Type, python_type: Type) -> Type {
-        ty.visit_mut(&mut |inner| {
-            if let Type::ClassType(class_type) = inner
-                && class_type
-                    .class_object()
-                    .has_toplevel_qname("sqlalchemy.orm.properties", "MappedColumn")
-                && let Some(slot) = class_type.targs_mut().as_mut().get_mut(0)
-            {
-                *slot = python_type.clone();
-            }
-        });
-        ty
-    }
-
-    fn is_sqlalchemy_mapped_hint(&self, ty: &Type) -> bool {
-        matches!(ty, Type::ClassType(cls) if cls.has_qname("sqlalchemy.orm.base", "Mapped"))
     }
 
     pub fn call_isinstance(

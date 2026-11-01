@@ -2070,17 +2070,6 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
             .collect()
     }
 
-    fn is_sqlalchemy_mapped_annotation(ty: &Type) -> bool {
-        match ty {
-            Type::ClassType(cls) => {
-                cls.has_qname("sqlalchemy.orm", "Mapped")
-                    || cls.has_qname("sqlalchemy.orm.base", "Mapped")
-            }
-            Type::Annotated(inner, _) => Self::is_sqlalchemy_mapped_annotation(inner),
-            _ => false,
-        }
-    }
-
     fn sqlalchemy_mapped_field_type(&self, model: &Class, field_name: &Name) -> Type {
         let model_ty = self.instantiate(model);
         let errors = self.error_swallower();
