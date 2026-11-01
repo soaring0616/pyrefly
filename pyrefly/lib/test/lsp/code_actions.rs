@@ -4586,7 +4586,6 @@ class Child(Base):
 "#;
     let (module_info, actions, _) = compute_push_down_actions(code);
     let updated = apply_refactor_edits_for_module(&module_info, &actions[0]);
-    // BUG: replacing the `pass` line also removes the docstring.
     let expected = r#"
 class Base:
     # MOVE-START
@@ -4594,6 +4593,7 @@ class Base:
     # MOVE-END
 
 class Child(Base):
+    """Child doc."""; pass
     def foo(self):
         pass
 "#;
