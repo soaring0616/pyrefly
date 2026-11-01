@@ -1727,7 +1727,13 @@ impl<'a> BindingsBuilder<'a> {
     ) -> Vec<Idx<KeyDecorator>> {
         let mut decorator_keys = Vec::with_capacity(decorators.len());
         for mut x in decorators {
-            let special = self.as_special_export(&x.expression);
+            let has_overload =
+                self.as_special_export(&x.expression) == Some(SpecialExport::Overload);
+            let special = if self.scopes.has_classmethod_reassignment_candidates() {
+                self.as_receiver_special_export(&x.expression)
+            } else {
+                None
+            };
             self.ensure_expr(&mut x.expression, usage);
             let trailing_name = Ast::decorator_trailing_name(&x.expression).map(Name::new);
             let k = self.insert_binding(
@@ -1736,6 +1742,7 @@ impl<'a> BindingsBuilder<'a> {
                     expr: x.expression,
                     trailing_name,
                     special,
+                    has_overload,
                 },
             );
             decorator_keys.push(k);

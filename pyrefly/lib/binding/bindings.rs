@@ -1297,7 +1297,12 @@ impl<'a> BindingsBuilder<'a> {
                     decorator.special
                 })
                 .collect::<Vec<_>>();
-            if !functions.is_empty() && !specials.contains(&Some(SpecialExport::Overload)) {
+            let has_overload = binding.decorators.iter().any(|idx| {
+                self.idx_to_binding(*idx)
+                    .expect("a decorator has a binding")
+                    .has_overload
+            });
+            if !functions.is_empty() && !has_overload {
                 break;
             }
             // Custom decorators receive the original function and can change its receiver.
@@ -1871,6 +1876,28 @@ impl<'a> BindingsBuilder<'a> {
         let mut visited_names: SmallSet<Name> = SmallSet::new();
         let mut visited_keys: SmallSet<Idx<Key>> = SmallSet::new();
         self.as_special_export_inner(e, &mut visited_names, &mut visited_keys)
+    }
+
+    /// Receiver rewrites need direct import or implicit-builtin provenance. Assigned
+    /// aliases and non-import merge styles are unsupported, not spelling-based proofs.
+    pub(super) fn as_receiver_special_export(&self, expr: &Expr) -> Option<SpecialExport> {
+        let (name, base) = match expr {
+            Expr::Name(name) => (&name.id, None),
+            Expr::Attribute(attr) if let Expr::Name(base) = attr.value.as_ref() => {
+                (&attr.attr.id, Some(&base.id))
+            }
+            _ => return None,
+        };
+        if let Some((_, style)) = self.scopes.binding_idx_for_name(base.unwrap_or(name))
+            && !matches!(
+                style,
+                FlowStyle::Import(..) | FlowStyle::ImportAs(_) | FlowStyle::MergeableImport(_)
+            )
+        {
+            return None;
+        }
+        self.scopes
+            .as_special_export(name, base, self.module_info.name(), self.lookup)
     }
 
     pub fn class_object_is_generic(&self, idx: Idx<Key>) -> bool {

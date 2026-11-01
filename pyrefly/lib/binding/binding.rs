@@ -2066,8 +2066,10 @@ pub enum FunctionParameter {
 pub struct BindingDecorator {
     pub expr: Expr,
     pub trailing_name: Option<Name>,
-    /// The special form resolved where this decorator expression is evaluated.
+    /// Direct receiver-feature proof captured where the expression is evaluated.
     pub special: Option<SpecialExport>,
+    /// Legacy overload classification is retained even when direct proof is unavailable.
+    pub has_overload: bool,
 }
 
 impl DisplayWith<Bindings> for BindingDecorator {

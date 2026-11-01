@@ -2494,7 +2494,6 @@ A.f()  # E: Argument `type[A]` is not assignable
 
 // Special-export aliases must preserve the values captured by their RHS expressions.
 testcase!(
-    bug = "Alias lookup follows a later rebinding of its RHS name",
     test_desugared_provenance_constructor_alias,
     r#"
 from typing import Self, assert_type
@@ -2506,16 +2505,15 @@ class A:
     decorate = identity
     identity = classmethod
     def f(self):
-        assert_type(self, Self)  # E: assert_type
+        assert_type(self, Self)
         return self
     f = decorate(f)
 
-assert_type(A().f(), A)  # E: assert_type  # E: Argument
+assert_type(A().f(), A)
 "#,
 );
 
 testcase!(
-    bug = "Helper certification follows a later alias rebinding",
     test_desugared_provenance_helper_alias,
     r#"
 from typing import assert_type
@@ -2530,17 +2528,16 @@ class A:
     def helper(self):
         return self
     def f(self):
-        return self.helper()  # E: Missing argument `self`
+        return self.helper()
     g = f
     f = classmethod(f)
 
 assert_type(A().g(), A)
-A.f()
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A special-export Phi ignores unknown alternatives",
     test_desugared_provenance_partial_phi,
     r#"
 from typing import Self, assert_type
@@ -2555,7 +2552,7 @@ class A:
     else:
         decorate = identity
     def f(self):
-        assert_type(self, Self)  # E: assert_type
+        assert_type(self, Self)
         return self
     f = decorate(f)
 "#,
@@ -2574,10 +2571,10 @@ class A:
     else:
         decorate = cm
     def f(cls):
-        assert_type(cls, Self)  # E: assert_type
+        assert_type(cls, Self)
         return cls
     f = decorate(f)
-A.f()
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
@@ -2708,15 +2705,14 @@ class A:
     if flag: a32 = a31
     else: a32 = a31
     def f(cls):
-        assert_type(cls, Self)  # E: assert_type
+        assert_type(cls, Self)
         return cls
     f = a32(f)
-A.f()
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A special-export Phi ignores differing module attributes",
     test_desugared_provenance_attribute_sensitive_diamond,
     r#"
 import builtins as b
@@ -2729,7 +2725,7 @@ class A:
     else:
         decorate = b.staticmethod
     def f(self):
-        assert_type(self, Self)  # E: assert_type
+        assert_type(self, Self)
         return self
     f = decorate(f)
 "#,

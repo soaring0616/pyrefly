@@ -14,7 +14,6 @@ use pyrefly_python::ast::AssignmentTargetKind;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::docstring::Docstring;
 use pyrefly_python::dunder;
-use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::nesting_context::NestingContext;
 use pyrefly_python::short_identifier::ShortIdentifier;
 use pyrefly_python::sys_info::SysInfo;
@@ -40,7 +39,6 @@ use ruff_python_ast::visitor::source_order::walk_expr;
 use ruff_python_ast::visitor::source_order::walk_stmt;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
-use starlark_map::Hashed;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use thin_vec::ThinVec;
@@ -74,7 +72,6 @@ use crate::binding::binding::ReturnType;
 use crate::binding::binding::ReturnTypeKind;
 use crate::binding::bindings::BindingsBuilder;
 use crate::binding::bindings::LegacyTParamCollector;
-use crate::binding::bindings::NameLookupResult;
 use crate::binding::expr::Usage;
 use crate::binding::pattern::match_case_always_matches;
 use crate::binding::scope::FlowStyle;
@@ -752,7 +749,10 @@ impl<'a> BindingsBuilder<'a> {
             let special_export = self.as_special_export(&d.expression);
             is_receiver_invariant_helper = record_receiver_helper
                 && decorator_list.len() == 1
-                && matches!(special_export, Some(SpecialExport::ClassMethod));
+                && matches!(
+                    self.as_receiver_special_export(&d.expression),
+                    Some(SpecialExport::ClassMethod | SpecialExport::StaticMethod)
+                );
             is_overload = is_overload || matches!(special_export, Some(SpecialExport::Overload));
             is_override = is_override || matches!(special_export, Some(SpecialExport::Override));
             is_abstract_method = is_abstract_method
@@ -771,38 +771,6 @@ impl<'a> BindingsBuilder<'a> {
         let decorators = self
             .ensure_and_bind_decorators(decorator_list, usage)
             .into_boxed_slice();
-        if record_receiver_helper
-            && !is_receiver_invariant_helper
-            && let [decorator] = decorators.as_ref()
-            && let Expr::Name(name) = &self
-                .idx_to_binding(*decorator)
-                .expect("a decorator has a binding")
-                .expr
-        {
-            // staticmethod is an ordinary builtin class, not a SpecialExport.
-            // Resolve the simple name here, while its decorator-time scope is still active.
-            let name = name.id.clone();
-            if let NameLookupResult::Found { idx, value_idx, .. } =
-                self.lookup_name(Hashed::new(&name), &mut Usage::NonPinningValue(None))
-            {
-                let mut idx = value_idx.unwrap_or(idx);
-                for _ in 0..8 {
-                    match self.idx_to_binding(idx) {
-                        Some(
-                            Binding::Forward(next)
-                            | Binding::PromoteForward(next)
-                            | Binding::ForwardToFirstUse(next),
-                        ) => idx = *next,
-                        Some(Binding::Import(import)) => {
-                            is_receiver_invariant_helper = import.module == ModuleName::builtins()
-                                && import.name.as_str() == "staticmethod";
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-            }
-        }
         Decorators {
             has_no_type_check,
             is_overload,

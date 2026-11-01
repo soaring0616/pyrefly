@@ -1025,6 +1025,8 @@ impl<'a> BindingsBuilder<'a> {
                             && call.arguments.keywords.is_empty()
                             && let [Expr::Name(argument)] = &*call.arguments.args
                             && argument.id == name.id
+                            && self.as_receiver_special_export(&call.func)
+                                == Some(SpecialExport::ClassMethod)
                         {
                             self.infer_classmethod_receiver(&name.id);
                         }
