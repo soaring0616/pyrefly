@@ -313,6 +313,67 @@ fn goto_definition_preserves_unsaved_destination() {
 }
 
 #[test]
+fn goto_definition_refreshes_disk_copy_of_open_destination() {
+    let root = TempDir::with_prefix("pyrefly_goto_def_open_disk").unwrap();
+    fs::write(
+        root.path().join("foo.py"),
+        "from bar import target\nvalue = target\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("bar.py"), "target = 1\n").unwrap();
+
+    let mut interaction = LspInteraction::new();
+    interaction.set_root(root.path().to_path_buf());
+    interaction.initialize(Default::default()).unwrap();
+    interaction.client.did_open("foo.py");
+    interaction.client.did_open("bar.py");
+    interaction
+        .client
+        .definition("foo.py", 1, 10)
+        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .unwrap();
+
+    // An external edit updates the buffer through didChange, without didSave or a watcher event.
+    let disk_contents = "# disk\ntarget = 1\n";
+    fs::write(root.path().join("bar.py"), disk_contents).unwrap();
+    interaction.client.did_change("bar.py", disk_contents);
+    interaction
+        .client
+        .definition("foo.py", 1, 10)
+        // Known bug: the filesystem copy remains stale while the destination is open.
+        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .unwrap();
+    interaction
+        .client
+        .definition("bar.py", 1, 2)
+        .expect_definition_response_from_root("bar.py", 1, 0, 1, 6)
+        .unwrap();
+
+    // Disk imports and the unsaved destination buffer have independent contents.
+    interaction
+        .client
+        .did_change("bar.py", "# unsaved\n# buffer\n# extra\ntarget = 1\n");
+    fs::write(
+        root.path().join("bar.py"),
+        "# disk\n# moved again\ntarget = 1\n",
+    )
+    .unwrap();
+    interaction
+        .client
+        .definition("foo.py", 1, 10)
+        // Known bug: another disk edit still cannot refresh this open destination.
+        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .unwrap();
+    interaction
+        .client
+        .definition("bar.py", 3, 2)
+        .expect_definition_response_from_root("bar.py", 3, 0, 3, 6)
+        .unwrap();
+
+    interaction.shutdown().unwrap();
+}
+
+#[test]
 fn test_go_to_def_single_root() {
     let root = get_test_files_root();
     test_go_to_def_basic(
