@@ -15,6 +15,7 @@ use pyrefly_config::base::InferReturnTypes;
 use pyrefly_config::finder::ConfigFinder;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::qname::QName;
+use pyrefly_python::short_identifier::ShortIdentifier;
 use pyrefly_util::forgetter::Forgetter;
 use pyrefly_util::fs_anyhow;
 use pyrefly_util::includes::Includes;
@@ -25,8 +26,10 @@ use ruff_python_ast::name::Name;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use ruff_text_size::TextSize;
+use starlark_map::Hashed;
 
 use crate::annotation::format_annotation;
+use crate::binding::binding::Key;
 use crate::commands::check::Handles;
 use crate::commands::config_finder::ConfigConfigurerWrapper;
 use crate::commands::files::FilesArgs;
@@ -421,13 +424,39 @@ impl InferArgs {
                     &heap,
                     handle.module(),
                     &|module, name| {
-                        if let Some(definition) = definitions.definitions.get(&Name::new(name)) {
-                            if !definition.needs_anywhere
-                                && matches!(&definition.style,
-                                    DefinitionStyle::Import(source) | DefinitionStyle::ImportAsEq(source)
-                                        if *source == module)
+                        let name = Name::new(name);
+                        if let Some(definition) = definitions.definitions.get(&name) {
+                            let reusable = !definition.needs_anywhere
                                 && (postponed || definition.range.end() <= leading_imports_end)
-                            {
+                                && match &definition.style {
+                                    DefinitionStyle::Import(source) if *source == module => true,
+                                    DefinitionStyle::Import(_) | DefinitionStyle::ImportAsEq(_) => {
+                                        // Identical aliases may import a module rather than a name.
+                                        // Compare the actual local value with the defining export.
+                                        let key = Key::Definition(
+                                            ShortIdentifier::from_text_range(definition.range),
+                                        );
+                                        transaction.ad_hoc_solve(
+                                            &handle,
+                                            "infer_import_identity",
+                                            |solver| {
+                                                let Some(expected) = solver
+                                                    .try_get_from_export(module, name.clone())
+                                                else {
+                                                    return false;
+                                                };
+                                                !expected.is_any()
+                                                    && solver
+                                                        .get_hashed_opt(Hashed::new(&key))
+                                                        .is_some_and(|existing| {
+                                                            existing.ty() == expected
+                                                        })
+                                            },
+                                        ) == Some(true)
+                                    }
+                                    _ => false,
+                                };
+                            if reusable {
                                 AnnotationImport::Existing
                             } else {
                                 AnnotationImport::Unavailable
@@ -1115,8 +1144,8 @@ def callbacks():
     #[test]
     fn test_imports_reuse_callable_reexport() {
         let input = "from collections.abc import Callable\ndef g(x: int) -> int:\n    return x\ndef f():\n    return g\n";
-        // BUG: A safe re-export is mistaken for a conflicting binding.
-        assert_annotations(input, input, None);
+        let expected = input.replace("def f():", "def f() -> Callable[[int], int]:");
+        assert_annotations(input, &expected, None);
     }
 
     #[test]
@@ -1124,8 +1153,8 @@ def callbacks():
         let input = "from typing_extensions import Self\nclass A:\n    def __new__(cls):\n        return object.__new__(cls)\n";
         let mut flags = InferFlags::default();
         flags.parameter_types = Some(false);
-        // BUG: Equivalent special forms from another module are rejected.
-        assert_annotations(input, input, Some(flags));
+        let expected = input.replace("def __new__(cls):", "def __new__(cls) -> Self:");
+        assert_annotations(input, &expected, Some(flags));
     }
 
     #[test]
@@ -1141,9 +1170,7 @@ def callbacks():
     #[test]
     fn test_imports_do_not_reuse_same_module_as_class() {
         let input = "import datetime as datetime\ndef f():\n    return datetime.datetime.now()\n";
-        // BUG: An identical module alias is mistaken for its same-named class.
-        let expected = input.replace("def f():", "def f() -> datetime:");
-        assert_annotations(input, &expected, None);
+        assert_annotations(input, input, None);
     }
 
     #[test]
@@ -1205,8 +1232,12 @@ def callbacks():
             ])
             .run(None, TEST_THREAD_COUNT)?;
             assert_eq!(status, CommandExitStatus::Success);
-            // BUG: The facade binding should be reusable; the unrelated class must not be.
-            assert_str_eq!(fs_anyhow::read_to_string(&path)?, input);
+            let expected = if source == "facade" {
+                input.replace("def foo():", "def foo() -> Foo:")
+            } else {
+                input
+            };
+            assert_str_eq!(fs_anyhow::read_to_string(&path)?, expected);
         }
         Ok(())
     }
