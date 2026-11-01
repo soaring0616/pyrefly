@@ -724,9 +724,9 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         }
     }
 
-    /// Equal classes cannot use reflected arithmetic. Subclasses retain the existing
-    /// priority approximation, which does not compare reflected method identities.
-    fn binary_operator_order(&self, lhs: &Type, rhs: &Type) -> BinaryOperatorOrder {
+    /// Equal classes cannot use reflected arithmetic. Inherited ordinary methods and
+    /// stable aliases do not get subclass priority; dynamic callables retain the approximation.
+    fn binary_operator_order(&self, op: Operator, lhs: &Type, rhs: &Type) -> BinaryOperatorOrder {
         if let (Type::ClassType(lhs_cls), Type::ClassType(rhs_cls)) = (lhs, rhs) {
             let lhs_obj = lhs_cls.class_object();
             let rhs_obj = rhs_cls.class_object();
@@ -734,6 +734,43 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                 return BinaryOperatorOrder::ForwardOnly;
             }
             if self.has_superclass(rhs_obj, lhs_obj) {
+                let reflected = Name::new_static(op.reflected_dunder());
+                let Some(right) = self.get_class_member_with_defining_class(rhs_obj, &reflected)
+                else {
+                    return BinaryOperatorOrder::ForwardFirst;
+                };
+                let Some(left) = self.get_class_member_with_defining_class(lhs_obj, &reflected)
+                else {
+                    return BinaryOperatorOrder::ReflectedFirst;
+                };
+                // Classmethods and descriptors can bind differently on the two classes.
+                if !(left.value.is_ordinary_instance_method() || left.value.is_staticmethod())
+                    || !(right.value.is_ordinary_instance_method() || right.value.is_staticmethod())
+                {
+                    return BinaryOperatorOrder::ReflectedFirst;
+                }
+                let left_ty = left.value.ty();
+                let right_ty = right.value.ty();
+                if matches!(left_ty, Type::BoundMethod(_))
+                    || matches!(right_ty, Type::BoundMethod(_))
+                {
+                    return BinaryOperatorOrder::ReflectedFirst;
+                }
+                if left.defining_class == right.defining_class {
+                    return BinaryOperatorOrder::ForwardFirst;
+                }
+                // Factory calls can create distinct functions from the same nested definition.
+                if let (Some(left_meta), Some(right_meta)) = (
+                    left_ty.toplevel_func_metadata(),
+                    right_ty.toplevel_func_metadata(),
+                ) && left_meta.kind == right_meta.kind
+                    && left_meta
+                        .kind
+                        .as_func_def_id()
+                        .is_some_and(|id| id.cls.is_some() || id.qname.parent().is_toplevel())
+                {
+                    return BinaryOperatorOrder::ForwardFirst;
+                }
                 return BinaryOperatorOrder::ReflectedFirst;
             }
         }
@@ -765,7 +802,7 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
             let forward_call = (&forward, lhs, rhs);
             let reflected_call = (&reflected, rhs, lhs);
             let mut calls = [forward_call, reflected_call];
-            let calls_to_try = match self.binary_operator_order(lhs, rhs) {
+            let calls_to_try = match self.binary_operator_order(op, lhs, rhs) {
                 BinaryOperatorOrder::ForwardOnly => &calls[..1],
                 BinaryOperatorOrder::ForwardFirst => &calls,
                 BinaryOperatorOrder::ReflectedFirst => {
@@ -876,7 +913,7 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                 (&Name::new_static(op.reflected_dunder()), rhs, lhs),
             ];
             // The inplace method precedes ordinary binary dispatch, even for subclasses.
-            let calls_to_try = match self.binary_operator_order(lhs, rhs) {
+            let calls_to_try = match self.binary_operator_order(op, lhs, rhs) {
                 BinaryOperatorOrder::ForwardOnly => &calls[..2],
                 BinaryOperatorOrder::ForwardFirst => &calls,
                 BinaryOperatorOrder::ReflectedFirst => {

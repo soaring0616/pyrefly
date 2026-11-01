@@ -865,7 +865,6 @@ def successful_inplace() -> None:
 );
 
 testcase!(
-    bug = "Inherited reflected methods incorrectly take subclass priority",
     test_reflected_subclass_method_identity,
     r#"
 from types import NotImplementedType
@@ -888,19 +887,19 @@ class Overridden(Base):
     def __radd__(self, other: object) -> str:
         return "overridden"
 
-assert_type(Base() + Inherited(), str)
-assert_type(Base() + Aliased(), str)
+assert_type(Base() + Inherited(), int)
+assert_type(Base() + Aliased(), int)
 assert_type(Base() + Overridden(), str)
 
 def inherited_inplace() -> None:
     value = Base()
     value += Inherited()
-    assert_type(value, str)
+    assert_type(value, int)
 
 def aliased_inplace() -> None:
     value = Base()
     value += Aliased()
-    assert_type(value, str)
+    assert_type(value, int)
 
 def overridden_inplace() -> None:
     value = Base()
@@ -917,7 +916,7 @@ class InplaceChild(Inplace):
 def declined_inplace() -> None:
     value = Inplace()
     value += InplaceChild()
-    assert_type(value, str)
+    assert_type(value, int)
 
 class PartialInplace(Base):
     def __iadd__(self, other: object) -> bytes | NotImplementedType:
@@ -929,7 +928,7 @@ class PartialInplaceChild(PartialInplace):
 def partial_inplace() -> None:
     value = PartialInplace()
     value += PartialInplaceChild()
-    assert_type(value, bytes | str)
+    assert_type(value, bytes | int)
 
 class Partial:
     def __add__(self, other: object) -> int | NotImplementedType:
@@ -941,7 +940,7 @@ class Partial:
 class PartialChild(Partial):
     pass
 
-assert_type(Partial() + PartialChild(), str)
+assert_type(Partial() + PartialChild(), int | str)
 
 class Generic[T]:
     def __add__(self, other: object) -> int:
@@ -953,7 +952,7 @@ class Generic[T]:
 class GenericChild(Generic[str]):
     pass
 
-assert_type(Generic[int]() + GenericChild(), str)
+assert_type(Generic[int]() + GenericChild(), int)
 
 class Static:
     def __add__(self, other: object) -> int:
@@ -969,8 +968,8 @@ class StaticChild(Static):
 class StaticAlias(Static):
     __radd__ = staticmethod(Static.__radd__)
 
-assert_type(Static() + StaticChild(), str)
-assert_type(Static() + StaticAlias(), str)
+assert_type(Static() + StaticChild(), int)
+assert_type(Static() + StaticAlias(), int)
 "#,
 );
 
