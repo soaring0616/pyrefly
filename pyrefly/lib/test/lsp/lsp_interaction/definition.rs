@@ -372,6 +372,52 @@ fn goto_definition_refreshes_disk_copy_of_open_destination() {
 }
 
 #[test]
+fn goto_definition_disk_refresh_survives_source_edits() {
+    let root = TempDir::with_prefix("pyrefly_goto_def_persistent_disk").unwrap();
+    let source = "from bar import target\nvalue = target\n";
+    fs::write(root.path().join("foo.py"), source).unwrap();
+    fs::write(root.path().join("bar.py"), "target: int = 1\n").unwrap();
+
+    let mut interaction = LspInteraction::new();
+    interaction.set_root(root.path().to_path_buf());
+    interaction.initialize(Default::default()).unwrap();
+    interaction.client.did_open("foo.py");
+    interaction
+        .client
+        .definition("foo.py", 1, 10)
+        .expect_definition_response_from_root("bar.py", 0, 0, 0, 6)
+        .unwrap();
+
+    fs::write(
+        root.path().join("bar.py"),
+        "# changed\ntarget: str = 'changed'\n",
+    )
+    .unwrap();
+    interaction
+        .client
+        .definition("foo.py", 1, 10)
+        .expect_definition_response_from_root("bar.py", 1, 0, 1, 6)
+        .unwrap();
+    interaction
+        .client
+        .hover("foo.py", 1, 10)
+        .expect_hover_response_with_markup(|markup| markup.is_some_and(|text| text.contains("str")))
+        .unwrap();
+
+    interaction
+        .client
+        .did_change("foo.py", &format!("{source}# unsaved\n"));
+    interaction
+        .client
+        .hover("foo.py", 1, 10)
+        // Known bug: committing a buffer edit discards the refreshed disk snapshot.
+        .expect_hover_response_with_markup(|markup| markup.is_some_and(|text| text.contains("int")))
+        .unwrap();
+
+    interaction.shutdown().unwrap();
+}
+
+#[test]
 fn test_go_to_def_single_root() {
     let root = get_test_files_root();
     test_go_to_def_basic(
