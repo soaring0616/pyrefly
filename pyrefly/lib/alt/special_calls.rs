@@ -644,23 +644,12 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                 }
             },
             Type::Union(u) => {
-                let mut inferred = Vec::new();
-                for member in &u.members {
-                    if let Some(member_ty) = self.python_type_from_type_engine_type(member) {
-                        inferred.push(member_ty);
-                    }
-                }
-                if inferred.is_empty() {
-                    None
-                } else {
-                    inferred.sort();
-                    inferred.dedup();
-                    if inferred.len() == 1 {
-                        inferred.pop()
-                    } else {
-                        Some(Type::union(inferred))
-                    }
-                }
+                let inferred = u
+                    .members
+                    .iter()
+                    .map(|member| self.python_type_from_type_engine_type(member))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(self.unions(inferred))
             }
             _ => None,
         }

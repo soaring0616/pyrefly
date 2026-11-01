@@ -277,7 +277,6 @@ def make(nullable: bool, primary_key: bool) -> None:
 );
 
 testcase!(
-    bug = "Union extraction drops gradual alternatives",
     test_sqlalchemy_mapped_column_gradual_union,
     sqlalchemy_env(),
     r#"
@@ -286,7 +285,7 @@ from sqlalchemy.orm import MappedColumn, mapped_column
 from sqlalchemy.sql.sqltypes import Integer, String
 
 def make(type_: Integer | Any) -> None:
-    assert_type(mapped_column(type_, nullable=False), MappedColumn[int])
+    assert_type(mapped_column(type_, nullable=False), MappedColumn[Any])
 
 def known(type_: Integer | String) -> None:
     assert_type(mapped_column(type_, nullable=False), MappedColumn[int | str])
