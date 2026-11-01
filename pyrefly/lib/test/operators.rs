@@ -1020,6 +1020,55 @@ def classmethod_inplace() -> None:
 );
 
 testcase!(
+    bug = "Protocol class identities incorrectly restrict reflected arithmetic",
+    test_reflected_protocol_operands,
+    r#"
+from typing import Protocol, assert_type
+
+class Reflected(Protocol):
+    def __radd__(self, other: object) -> int: ...
+
+def same_protocol(left: Reflected, right: Reflected) -> None:
+    left + right  # E: Cannot find `__add__`
+    value = left
+    value += right  # E: Cannot find `__iadd__` or `__add__`
+
+class GenericReflected[T](Protocol):
+    def __radd__(self, other: object) -> T: ...
+
+def generic_protocol(left: GenericReflected[int], right: GenericReflected[str]) -> None:
+    left + right  # E: Cannot find `__add__`
+    value = left
+    value += right  # E: Cannot find `__iadd__` or `__add__`
+
+class ForwardAndReflected(Protocol):
+    def __add__(self, other: object) -> bytes: ...
+    def __radd__(self, other: object) -> int: ...
+
+def forward_still_first(left: ForwardAndReflected, right: ForwardAndReflected) -> None:
+    assert_type(left + right, bytes)
+    value = left
+    value += right
+    assert_type(value, bytes)
+
+class Related(ForwardAndReflected, Protocol):
+    pass
+
+def related_protocols(left: ForwardAndReflected, right: Related) -> None:
+    assert_type(left + right, bytes)
+    value = left
+    value += right
+    assert_type(value, bytes)
+
+class Concrete:
+    def __radd__(self, other: object) -> int:
+        return 1
+
+Concrete() + Concrete()  # E: Cannot find `__add__`
+"#,
+);
+
+testcase!(
     test_not_implemented_binary_returns,
     r#"
 from types import NotImplementedType
