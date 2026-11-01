@@ -2492,6 +2492,64 @@ class C:
 "#,
 );
 
+testcase!(
+    bug = "A docstring write is mistaken for a retained instance method",
+    test_desugared_classmethod_docstring_write,
+    r#"
+from typing import assert_type
+
+def helper(cls: type[A], value: int) -> int:
+    return value
+
+class A:
+    def f(cls, value: int) -> int:
+        return helper(cls, value)  # E: Argument `Self@A` is not assignable
+    f.__doc__ = helper.__doc__
+    f = classmethod(f)
+
+assert_type(A.f(1), int)  # E: Argument `type[A]` is not assignable
+    "#,
+);
+
+testcase!(
+    test_desugared_classmethod_docstring_with_alias,
+    r#"
+from typing import assert_type
+
+class A:
+    def f(self):
+        return self
+    g = f
+    f.__doc__ = "documentation"
+    f = classmethod(f)
+
+assert_type(A().g(), A)
+assert_type(A.f(), type[A])
+    "#,
+);
+
+testcase!(
+    test_desugared_classmethod_docstring_rhs_capture,
+    r#"
+from __future__ import annotations
+from typing import Callable, assert_type
+
+captured: list[Callable[[A], A]] = []
+def capture(fn: Callable[[A], A]) -> str:
+    captured.append(fn)
+    return "documentation"
+
+class A:
+    def f(self):
+        return self
+    f.__doc__ = capture(f)
+    f = classmethod(f)
+
+assert_type(captured[0](A()), A)
+assert_type(A.f(), type[A])
+    "#,
+);
+
 // Special-export aliases must preserve the values captured by their RHS expressions.
 testcase!(
     test_desugared_provenance_constructor_alias,
