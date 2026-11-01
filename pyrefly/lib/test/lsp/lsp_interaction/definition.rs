@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use lsp_server::RequestId;
 use lsp_types::Definition;
@@ -24,6 +25,8 @@ use pyrefly_lsp_test::Request;
 use pyrefly_lsp_test::object_model::InitializeSettings;
 use pyrefly_lsp_test::object_model::LspInteraction;
 use pyrefly_lsp_test::object_model::LspInteractionArgs;
+use pyrefly_lsp_test::object_model::TestTelemetry;
+use pyrefly_util::telemetry::TelemetryEventKind;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -378,7 +381,12 @@ fn goto_definition_disk_refresh_survives_source_edits() {
     fs::write(root.path().join("foo.py"), source).unwrap();
     fs::write(root.path().join("bar.py"), "target: int = 1\n").unwrap();
 
-    let mut interaction = LspInteraction::new();
+    let telemetry = TestTelemetry::new();
+    let telemetry_events = telemetry.subscribe();
+    let mut interaction = LspInteraction::new_with_args(LspInteractionArgs {
+        telemetry: Box::new(telemetry),
+        ..Default::default()
+    });
     interaction.set_root(root.path().to_path_buf());
     interaction.initialize(Default::default()).unwrap();
     interaction.client.did_open("foo.py");
@@ -404,14 +412,27 @@ fn goto_definition_disk_refresh_survives_source_edits() {
         .expect_hover_response_with_markup(|markup| markup.is_some_and(|text| text.contains("str")))
         .unwrap();
 
+    // Wait for the disk update to commit before testing a fresh editor transaction.
+    loop {
+        let event = telemetry_events
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+        if matches!(event.event.kind, TelemetryEventKind::InvalidateDisk) {
+            assert!(
+                event.error.is_none(),
+                "Disk refresh failed: {:?}",
+                event.error
+            );
+            break;
+        }
+    }
     interaction
         .client
         .did_change("foo.py", &format!("{source}# unsaved\n"));
     interaction
         .client
         .hover("foo.py", 1, 10)
-        // Known bug: committing a buffer edit discards the refreshed disk snapshot.
-        .expect_hover_response_with_markup(|markup| markup.is_some_and(|text| text.contains("int")))
+        .expect_hover_response_with_markup(|markup| markup.is_some_and(|text| text.contains("str")))
         .unwrap();
 
     interaction.shutdown().unwrap();

@@ -5062,12 +5062,17 @@ impl Server {
             }
         }
         if !changed.is_empty() {
-            transaction.invalidate_disk(&changed.into_iter().collect::<Vec<_>>());
+            let changed = changed.into_iter().collect::<Vec<_>>();
+            transaction.invalidate_disk(&changed);
             transaction.run(
                 std::slice::from_ref(&handle),
                 Require::Everything,
                 Some(&self.lsp_thread_pool),
             );
+            // The query transaction cannot commit its refreshed disk modules.
+            self.invalidate(TelemetryEventKind::InvalidateDisk, None, false, move |t| {
+                t.invalidate_disk(&changed)
+            });
             targets = transaction.goto_definition(&handle, range)?;
         }
         let mut lsp_targets = targets
