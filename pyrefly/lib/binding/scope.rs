@@ -1792,6 +1792,15 @@ impl Scopes {
         }
     }
 
+    /// Receiver inference must not mutate a definition shared with another control-flow path.
+    pub fn in_unconditional_class_body(&self) -> bool {
+        self.in_class_body()
+            && self.current().forks.is_empty()
+            && self.current().loops.is_empty()
+            && self.current().with_may_raise.is_empty()
+            && self.current().finally_depth == 0
+    }
+
     pub fn mark_method_as_classmethod(&mut self, method_name: &Name) {
         let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
             unreachable!("a reassigned classmethod is only marked in a class body")

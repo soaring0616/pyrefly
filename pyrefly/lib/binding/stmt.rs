@@ -1021,7 +1021,7 @@ impl<'a> BindingsBuilder<'a> {
                             return;
                         }
                         if special == SpecialExport::ClassMethod
-                            && self.scopes.in_class_body()
+                            && self.scopes.in_unconditional_class_body()
                             && call.arguments.keywords.is_empty()
                             && let [Expr::Name(argument)] = &*call.arguments.args
                             && argument.id == name.id

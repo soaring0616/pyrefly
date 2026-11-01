@@ -1589,7 +1589,6 @@ A.f()
 );
 
 testcase!(
-    bug = "A classmethod conversion retypes an untouched sibling branch",
     test_desugared_classmethod_branch_alias,
     r#"
 from typing import assert_type
@@ -1603,7 +1602,7 @@ def example(flag: bool) -> None:
         else:
             g = f
     if not flag:
-        assert_type(A().g(), A)  # E: assert_type(type[example.A], example.A) failed  # E: is not assignable to parameter `self`
+        assert_type(A().g(), A)
 
 example(False)
     "#,
