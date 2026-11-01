@@ -865,6 +865,162 @@ def successful_inplace() -> None:
 );
 
 testcase!(
+    bug = "Inherited reflected methods incorrectly take subclass priority",
+    test_reflected_subclass_method_identity,
+    r#"
+from types import NotImplementedType
+from typing import assert_type
+
+class Base:
+    def __add__(self, other: object) -> int:
+        return 1
+
+    def __radd__(self, other: object) -> str:
+        return "reflected"
+
+class Inherited(Base):
+    pass
+
+class Aliased(Base):
+    __radd__ = Base.__radd__
+
+class Overridden(Base):
+    def __radd__(self, other: object) -> str:
+        return "overridden"
+
+assert_type(Base() + Inherited(), str)
+assert_type(Base() + Aliased(), str)
+assert_type(Base() + Overridden(), str)
+
+def inherited_inplace() -> None:
+    value = Base()
+    value += Inherited()
+    assert_type(value, str)
+
+def aliased_inplace() -> None:
+    value = Base()
+    value += Aliased()
+    assert_type(value, str)
+
+def overridden_inplace() -> None:
+    value = Base()
+    value += Overridden()
+    assert_type(value, str)
+
+class Inplace(Base):
+    def __iadd__(self, other: object) -> NotImplementedType:
+        return NotImplemented
+
+class InplaceChild(Inplace):
+    pass
+
+def declined_inplace() -> None:
+    value = Inplace()
+    value += InplaceChild()
+    assert_type(value, str)
+
+class PartialInplace(Base):
+    def __iadd__(self, other: object) -> bytes | NotImplementedType:
+        return NotImplemented
+
+class PartialInplaceChild(PartialInplace):
+    pass
+
+def partial_inplace() -> None:
+    value = PartialInplace()
+    value += PartialInplaceChild()
+    assert_type(value, bytes | str)
+
+class Partial:
+    def __add__(self, other: object) -> int | NotImplementedType:
+        return NotImplemented
+
+    def __radd__(self, other: object) -> str:
+        return "reflected"
+
+class PartialChild(Partial):
+    pass
+
+assert_type(Partial() + PartialChild(), str)
+
+class Generic[T]:
+    def __add__(self, other: object) -> int:
+        return 1
+
+    def __radd__(self, other: object) -> str:
+        return "reflected"
+
+class GenericChild(Generic[str]):
+    pass
+
+assert_type(Generic[int]() + GenericChild(), str)
+
+class Static:
+    def __add__(self, other: object) -> int:
+        return 1
+
+    @staticmethod
+    def __radd__(other: object) -> str:
+        return "staticmethod"
+
+class StaticChild(Static):
+    pass
+
+class StaticAlias(Static):
+    __radd__ = staticmethod(Static.__radd__)
+
+assert_type(Static() + StaticChild(), str)
+assert_type(Static() + StaticAlias(), str)
+"#,
+);
+
+testcase!(
+    test_reflected_subclass_dynamic_methods,
+    r#"
+from typing import assert_type
+
+def reflected():
+    def method(self: object, other: object) -> str:
+        return "factory"
+    return method
+
+class FactoryBase:
+    def __add__(self, other: object) -> int:
+        return 1
+
+    __radd__ = reflected()
+
+class FactoryChild(FactoryBase):
+    __radd__ = reflected()
+
+assert_type(FactoryBase() + FactoryChild(), str)
+
+def factory_inplace() -> None:
+    value = FactoryBase()
+    value += FactoryChild()
+    assert_type(value, str)
+
+class ClassMethodBase:
+    def __add__(self, other: object) -> int:
+        return 1
+
+    @classmethod
+    def __radd__(cls, other: object) -> str:
+        return "classmethod"
+
+class ClassMethodChild(ClassMethodBase):
+    pass
+
+assert_type(ClassMethodBase() + ClassMethodChild(), str)
+
+def classmethod_inplace() -> None:
+    value = ClassMethodBase()
+    value += ClassMethodChild()
+    assert_type(value, str)
+"#,
+);
+
+testcase!(
     test_not_implemented_binary_returns,
     r#"
 from types import NotImplementedType
