@@ -291,3 +291,61 @@ def known(type_: Integer | String) -> None:
     assert_type(mapped_column(type_, nullable=False), MappedColumn[int | str])
 "#,
 );
+
+testcase!(
+    test_sqlalchemy_mapped_column_call_boundaries,
+    sqlalchemy_env(),
+    r#"
+from enum import Enum as PythonEnum
+from typing import Annotated, Any, Literal, TypeAlias, assert_type
+from sqlalchemy.orm import Mapped, MappedColumn, mapped_column
+from sqlalchemy.sql.sqltypes import Enum, String
+from sqlalchemy.sql.type_api import TypeEngine
+
+class Color(PythonEnum):
+    RED = "red"
+
+class DialectEnum(Enum): ...
+
+constructor = Enum
+assert_type(mapped_column("color", constructor(Color)), MappedColumn[Color | None])
+assert_type(mapped_column(type_=constructor(Color)), MappedColumn[Color | None])
+assert_type(mapped_column(DialectEnum(Color)), MappedColumn[Any])
+assert_type(mapped_column(Enum("red", "blue")), MappedColumn[Any])
+
+def enum_factory(ignored: type[Color]) -> Enum:
+    return Enum("red", "blue")
+
+assert_type(mapped_column(enum_factory(Color)), MappedColumn[Any])
+
+def abstract(sql_type: TypeEngine[str]) -> None:
+    assert_type(mapped_column(sql_type, nullable=False), MappedColumn[Any])
+
+def class_form(sql_type: type[String]) -> None:
+    assert_type(mapped_column(sql_type, nullable=False), MappedColumn[str])
+
+StringAlias: TypeAlias = String
+assert_type(mapped_column(StringAlias, nullable=False), MappedColumn[str])
+
+type KeyColumn = Mapped[Literal["red"]]
+class Model:
+    key: KeyColumn = mapped_column(String, nullable=False)
+    annotated: Annotated[Mapped[Literal["red"]], "metadata"] = mapped_column(String)
+assert_type(Model().key, Literal["red"])
+assert_type(Model().annotated, Literal["red"])
+
+mapped_column(42)  # E: Argument
+"#,
+);
+
+testcase!(
+    test_mapped_column_without_sqlalchemy,
+    r#"
+from typing import assert_type
+
+def mapped_column(value: int) -> bytes:
+    return bytes(value)
+
+assert_type(mapped_column(3), bytes)
+"#,
+);
