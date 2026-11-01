@@ -1311,7 +1311,11 @@ impl<'a> BindingsBuilder<'a> {
             let Some(pred_idx) = pred_idx else { break };
             idx = pred_idx;
         }
-        if functions.is_empty() {
+        if functions.is_empty()
+            || functions
+                .iter()
+                .any(|idx| !self.scopes.has_classmethod_receiver_candidate(*idx))
+        {
             return;
         }
         let is_used = functions.iter().any(|idx| {
@@ -1320,15 +1324,68 @@ impl<'a> BindingsBuilder<'a> {
                 .def
                 .is_used_before_classmethod
         });
-        for idx in functions {
+        for idx in &functions {
             let function = &mut self
-                .idx_to_binding_mut(idx)
+                .idx_to_binding_mut(*idx)
                 .expect("a decorated function has an undecorated function")
                 .def;
             function.is_reassigned_classmethod = true;
             function.is_used_before_classmethod = is_used;
         }
-        self.scopes.mark_method_as_classmethod(name);
+        // Mark the constructor operand before binding its expression, but wait for final
+        // class members before accepting shared receiver inference or changing attributes.
+        self.scopes.queue_classmethod_receiver(functions);
+    }
+
+    pub fn finish_classmethod_receivers(&mut self) {
+        let receivers = self.scopes.take_classmethod_receiver_state();
+        for functions in receivers.pending {
+            let leader = self
+                .idx_to_binding(functions[0])
+                .expect("a queued receiver group has function bindings");
+            let is_used = leader.def.is_used_before_classmethod;
+            let name = leader.def.name.id.clone();
+            let range = leader.def.range;
+            let supported = !is_used
+                || functions.iter().all(|idx| {
+                    receivers
+                        .uses
+                        .get(idx)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|members| {
+                            members.iter().all(|member| {
+                                let Some(idx) = self.scopes.current_flow_idx(member) else {
+                                    return false;
+                                };
+                                let Some(Binding::Function { decorated_idx, .. }) =
+                                    self.idx_to_binding(idx)
+                                else {
+                                    return false;
+                                };
+                                let undecorated = self
+                                    .idx_to_binding(*decorated_idx)
+                                    .expect("a function flow binding has a decorated function")
+                                    .undecorated_idx;
+                                self.idx_to_binding(undecorated)
+                                    .expect("a decorated function has an undecorated function")
+                                    .def
+                                    .is_receiver_invariant_helper
+                            })
+                        })
+                });
+            if supported {
+                self.scopes.mark_method_as_classmethod(&name, range);
+            } else {
+                // Keep the original instance signature. The classmethod call reports its
+                // unsupported receiver rather than exporting an uncorrelated return union.
+                for idx in functions {
+                    self.idx_to_binding_mut(idx)
+                        .expect("a queued receiver group has function bindings")
+                        .def
+                        .is_reassigned_classmethod = false;
+                }
+            }
+        }
     }
 
     /// Declare a `Key` as a usage, which can be used for name lookups. Like `idx_for_promise`,

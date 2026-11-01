@@ -58,6 +58,7 @@ use crate::binding::binding::KeyClassMro;
 use crate::binding::binding::KeyClassSubscriptSymmetry;
 use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyDecoratedFunction;
+use crate::binding::binding::KeyUndecoratedFunction;
 use crate::binding::binding::KeyVariance;
 use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
@@ -1089,12 +1090,23 @@ pub struct ClassIndices {
     pub subscript_symmetry_idx: Idx<KeyClassSubscriptSymmetry>,
 }
 
+/// Class-body-local proofs and pending rewrites for desugared classmethods.
+#[derive(Clone, Debug, Default)]
+pub struct ClassmethodReceiverState {
+    /// Only unconditional syntactic candidates have entries. `None` means that
+    /// the receiver's operations require separate instance/class body inference.
+    pub uses: SmallMap<Idx<KeyUndecoratedFunction>, Option<Box<[Name]>>>,
+    pub pending: Vec<Box<[Idx<KeyUndecoratedFunction>]>>,
+}
+
 #[derive(Clone, Debug)]
 struct ScopeClass {
     name: Identifier,
     indices: ClassIndices,
     attributes_from_recognized_methods: SmallMap<Name, SmallMap<Name, InstanceAttribute>>,
     attributes_from_other_methods: SmallMap<Name, SmallMap<Name, InstanceAttribute>>,
+    classmethod_reassignment_candidates: SmallSet<Name>,
+    classmethod_receivers: ClassmethodReceiverState,
     /// Attributes that `__new__` assigns on the instance it creates.
     attributes_set_on_new_instance: SmallSet<Name>,
     nn_module_registrations: NNModuleRegistrations,
@@ -1108,6 +1120,8 @@ impl ScopeClass {
             indices,
             attributes_from_recognized_methods: SmallMap::new(),
             attributes_from_other_methods: SmallMap::new(),
+            classmethod_reassignment_candidates: SmallSet::new(),
+            classmethod_receivers: ClassmethodReceiverState::default(),
             attributes_set_on_new_instance: SmallSet::new(),
             nn_module_registrations: SmallMap::new(),
             has_protocol_base,
@@ -1801,7 +1815,63 @@ impl Scopes {
             && self.current().finally_depth == 0
     }
 
-    pub fn mark_method_as_classmethod(&mut self, method_name: &Name) {
+    pub fn set_classmethod_reassignment_candidates(&mut self, candidates: SmallSet<Name>) {
+        let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
+            unreachable!("classmethod reassignment candidates belong to a class body")
+        };
+        class_scope.classmethod_reassignment_candidates = candidates;
+    }
+
+    pub fn has_classmethod_reassignment_candidates(&self) -> bool {
+        matches!(&self.current().kind, ScopeKind::Class(scope)
+            if !scope.classmethod_reassignment_candidates.is_empty())
+    }
+
+    pub fn is_classmethod_reassignment_candidate(&self, name: &Name) -> bool {
+        matches!(&self.current().kind, ScopeKind::Class(scope)
+            if scope.classmethod_reassignment_candidates.contains(name))
+    }
+
+    pub fn record_classmethod_receiver_uses(
+        &mut self,
+        function: Idx<KeyUndecoratedFunction>,
+        members: Option<Box<[Name]>>,
+    ) {
+        let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
+            unreachable!("receiver-use summaries belong to a class body")
+        };
+        class_scope
+            .classmethod_receivers
+            .uses
+            .insert(function, members);
+    }
+
+    pub fn has_classmethod_receiver_candidate(
+        &self,
+        function: Idx<KeyUndecoratedFunction>,
+    ) -> bool {
+        matches!(&self.current().kind, ScopeKind::Class(scope)
+            if scope.classmethod_receivers.uses.contains_key(&function))
+    }
+
+    pub fn queue_classmethod_receiver(&mut self, functions: Vec<Idx<KeyUndecoratedFunction>>) {
+        let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
+            unreachable!("a reassigned classmethod is only queued in a class body")
+        };
+        class_scope
+            .classmethod_receivers
+            .pending
+            .push(functions.into_boxed_slice());
+    }
+
+    pub fn take_classmethod_receiver_state(&mut self) -> ClassmethodReceiverState {
+        let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
+            unreachable!("reassigned classmethods are finalized in a class body")
+        };
+        mem::take(&mut class_scope.classmethod_receivers)
+    }
+
+    pub fn mark_method_as_classmethod(&mut self, method_name: &Name, method_range: TextRange) {
         let ScopeKind::Class(class_scope) = &mut self.current_mut().kind else {
             unreachable!("a reassigned classmethod is only marked in a class body")
         };
@@ -1811,7 +1881,9 @@ impl Scopes {
         ] {
             if let Some(attributes) = attributes.get_mut(method_name) {
                 for attribute in attributes.values_mut() {
-                    attribute.3 = MethodSelfKind::Class;
+                    if method_range.contains_range(attribute.2) {
+                        attribute.3 = MethodSelfKind::Class;
+                    }
                 }
             }
         }

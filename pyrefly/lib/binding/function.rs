@@ -14,6 +14,7 @@ use pyrefly_python::ast::AssignmentTargetKind;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::docstring::Docstring;
 use pyrefly_python::dunder;
+use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::nesting_context::NestingContext;
 use pyrefly_python::short_identifier::ShortIdentifier;
 use pyrefly_python::sys_info::SysInfo;
@@ -25,6 +26,7 @@ use ruff_python_ast::Decorator;
 use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprCall;
+use ruff_python_ast::ExprContext;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Stmt;
@@ -38,7 +40,9 @@ use ruff_python_ast::visitor::source_order::walk_expr;
 use ruff_python_ast::visitor::source_order::walk_stmt;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
+use starlark_map::Hashed;
 use starlark_map::small_map::SmallMap;
+use starlark_map::small_set::SmallSet;
 use thin_vec::ThinVec;
 
 use crate::binding::binding::AnnotationTarget;
@@ -70,6 +74,7 @@ use crate::binding::binding::ReturnType;
 use crate::binding::binding::ReturnTypeKind;
 use crate::binding::bindings::BindingsBuilder;
 use crate::binding::bindings::LegacyTParamCollector;
+use crate::binding::bindings::NameLookupResult;
 use crate::binding::expr::Usage;
 use crate::binding::pattern::match_case_always_matches;
 use crate::binding::scope::FlowStyle;
@@ -89,6 +94,7 @@ struct Decorators {
     is_abstract_method: bool,
     is_override: bool,
     is_classmethod: bool,
+    is_receiver_invariant_helper: bool,
     decorators: Box<[Idx<KeyDecorator>]>,
 }
 
@@ -163,6 +169,86 @@ impl<'a, 'b> SourceOrderVisitor<'a> for SuperMethodCallFinder<'b> {
             Expr::Lambda(_) => {}
             _ if self.is_super_method_call(expr) => {
                 self.found = true;
+            }
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+/// A dual-use receiver can be returned directly or used to read invariant members.
+/// Escapes, mutations, and captures require separate instance/class body inference.
+struct ReceiverUseFinder<'a> {
+    receiver: &'a Name,
+    members: SmallSet<Name>,
+    supported: bool,
+    nested_scope: bool,
+}
+
+impl ReceiverUseFinder<'_> {
+    fn find(receiver: &Name, body: &[Stmt]) -> Option<Box<[Name]>> {
+        let mut finder = ReceiverUseFinder {
+            receiver,
+            members: SmallSet::new(),
+            supported: true,
+            nested_scope: false,
+        };
+        for stmt in body {
+            finder.visit_stmt(stmt);
+        }
+        finder
+            .supported
+            .then(|| finder.members.into_iter().collect())
+    }
+}
+
+impl<'a> SourceOrderVisitor<'a> for ReceiverUseFinder<'_> {
+    fn visit_stmt(&mut self, stmt: &'a Stmt) {
+        if !self.supported {
+            return;
+        }
+        match stmt {
+            Stmt::Return(ret)
+                if !self.nested_scope
+                    && matches!(ret.value.as_deref(), Some(Expr::Name(name))
+                        if name.id == *self.receiver) => {}
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {
+                let was_nested = self.nested_scope;
+                self.nested_scope = true;
+                walk_stmt(self, stmt);
+                self.nested_scope = was_nested;
+            }
+            _ => walk_stmt(self, stmt),
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if !self.supported {
+            return;
+        }
+        match expr {
+            Expr::Call(_) if SuperMethodCallFinder::is_super_call(expr) => {
+                self.supported = false;
+            }
+            Expr::Attribute(attr)
+                if matches!(attr.value.as_ref(), Expr::Name(name)
+                    if name.id == *self.receiver) =>
+            {
+                if !self.nested_scope && attr.ctx == ExprContext::Load {
+                    self.members.insert(attr.attr.id.clone());
+                } else {
+                    self.supported = false;
+                }
+            }
+            Expr::Name(name) if name.id == *self.receiver => self.supported = false,
+            Expr::Lambda(_)
+            | Expr::Generator(_)
+            | Expr::ListComp(_)
+            | Expr::SetComp(_)
+            | Expr::DictComp(_) => {
+                let was_nested = self.nested_scope;
+                self.nested_scope = true;
+                walk_expr(self, expr);
+                self.nested_scope = was_nested;
             }
             _ => walk_expr(self, expr),
         }
@@ -660,8 +746,13 @@ impl<'a> BindingsBuilder<'a> {
         let mut has_no_type_check = false;
         let mut is_abstract_method = false;
         let mut is_classmethod = false;
+        let mut is_receiver_invariant_helper = false;
+        let record_receiver_helper = self.scopes.has_classmethod_reassignment_candidates();
         for d in &decorator_list {
             let special_export = self.as_special_export(&d.expression);
+            is_receiver_invariant_helper = record_receiver_helper
+                && decorator_list.len() == 1
+                && matches!(special_export, Some(SpecialExport::ClassMethod));
             is_overload = is_overload || matches!(special_export, Some(SpecialExport::Overload));
             is_override = is_override || matches!(special_export, Some(SpecialExport::Override));
             is_abstract_method = is_abstract_method
@@ -680,12 +771,45 @@ impl<'a> BindingsBuilder<'a> {
         let decorators = self
             .ensure_and_bind_decorators(decorator_list, usage)
             .into_boxed_slice();
+        if record_receiver_helper
+            && !is_receiver_invariant_helper
+            && let [decorator] = decorators.as_ref()
+            && let Expr::Name(name) = &self
+                .idx_to_binding(*decorator)
+                .expect("a decorator has a binding")
+                .expr
+        {
+            // staticmethod is an ordinary builtin class, not a SpecialExport.
+            // Resolve the simple name here, while its decorator-time scope is still active.
+            let name = name.id.clone();
+            if let NameLookupResult::Found { idx, value_idx, .. } =
+                self.lookup_name(Hashed::new(&name), &mut Usage::NonPinningValue(None))
+            {
+                let mut idx = value_idx.unwrap_or(idx);
+                for _ in 0..8 {
+                    match self.idx_to_binding(idx) {
+                        Some(
+                            Binding::Forward(next)
+                            | Binding::PromoteForward(next)
+                            | Binding::ForwardToFirstUse(next),
+                        ) => idx = *next,
+                        Some(Binding::Import(import)) => {
+                            is_receiver_invariant_helper = import.module == ModuleName::builtins()
+                                && import.name.as_str() == "staticmethod";
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
         Decorators {
             has_no_type_check,
             is_overload,
             is_abstract_method,
             is_override,
             is_classmethod,
+            is_receiver_invariant_helper,
             decorators,
         }
     }
@@ -899,6 +1023,18 @@ impl<'a> BindingsBuilder<'a> {
 
         self.maybe_record_pytest_fixture_definition(&x, class_key);
 
+        let is_receiver_candidate = self.scopes.in_unconditional_class_body()
+            && self
+                .scopes
+                .is_classmethod_reassignment_candidate(&func_name.id);
+        let receiver_member_reads = if is_receiver_candidate {
+            x.parameters
+                .iter()
+                .next()
+                .and_then(|p| ReceiverUseFinder::find(&p.name().id, &x.body))
+        } else {
+            None
+        };
         let decorators = self.decorators(mem::take(&mut x.decorator_list), def_idx.usage());
 
         self.scopes.push(Scope::annotation(x.range, false));
@@ -925,11 +1061,17 @@ impl<'a> BindingsBuilder<'a> {
         self.scopes.pop();
         self.scopes
             .record_self_assignments_if_applicable(self_assignments);
+        if is_receiver_candidate {
+            self.scopes
+                .record_classmethod_receiver_uses(undecorated_idx, receiver_member_reads);
+        }
+        let mut def = FunctionDefData::new(x);
+        def.is_receiver_invariant_helper = decorators.is_receiver_invariant_helper;
         let undecorated_idx = self.insert_binding_idx(
             undecorated_idx,
             BindingUndecoratedFunction {
                 def_index: func_def_index,
-                def: FunctionDefData::new(x),
+                def,
                 is_in_type_checking_block: self.type_checking_depth > 0,
                 body_kind,
                 is_return_inferred,

@@ -2087,6 +2087,8 @@ pub struct FunctionDefData {
     pub is_reassigned_classmethod: bool,
     /// Whether another expression uses this function before its classmethod assignment.
     pub is_used_before_classmethod: bool,
+    /// A plain classmethod or staticmethod has the same binding on instances and classes.
+    pub is_receiver_invariant_helper: bool,
     pub range: TextRange,
 }
 
@@ -2099,6 +2101,7 @@ impl FunctionDefData {
             is_async: def.is_async,
             is_reassigned_classmethod: false,
             is_used_before_classmethod: false,
+            is_receiver_invariant_helper: false,
             range: def.range,
         }
     }

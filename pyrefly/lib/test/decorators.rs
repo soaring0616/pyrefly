@@ -1609,7 +1609,6 @@ example(False)
 );
 
 testcase!(
-    bug = "Instance aliases lose descriptor-dependent return precision",
     test_desugared_classmethod_property_alias,
     r#"
 from typing import assert_type
@@ -1623,8 +1622,8 @@ class A:
     g = f
     f = classmethod(f)
 
-assert_type(A().g(), int)  # E: assert_type(((self: A) -> int) | int, int) failed
-value: int = A().g()  # E: `((self: A) -> int) | int` is not assignable to `int`
+assert_type(A().g(), int)
+value: int = A().g()
     "#,
 );
 
@@ -2331,7 +2330,6 @@ class C:
 
 // Receiver-boundary tests keep instance aliases precise when class access has different behavior.
 testcase!(
-    bug = "A shared receiver loses descriptor-result correlation",
     test_desugared_receiver_boundary_descriptor,
     r#"
 from typing import assert_type, overload
@@ -2351,13 +2349,12 @@ class A:
     g = f
     f = classmethod(f)
 
-assert_type(A().g(), int)  # E: assert_type
-A.f()
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A shared receiver loses an instance alias through a local",
     test_desugared_receiver_boundary_receiver_alias,
     r#"
 from typing import assert_type
@@ -2372,13 +2369,12 @@ class A:
     g = f
     f = classmethod(f)
 
-assert_type(A().g(), int)  # E: assert_type
-A.f()
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A shared receiver loses instance results in a nested closure",
     test_desugared_receiver_boundary_nested_capture,
     r#"
 from typing import assert_type
@@ -2394,13 +2390,12 @@ class A:
     g = f
     f = classmethod(f)
 
-assert_type(A().g()(), int)  # E: assert_type
-A.f()
+assert_type(A().g()(), int)
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A class receiver contaminates the saved instance method body",
     test_desugared_receiver_boundary_final_helper,
     r#"
 from typing import assert_type
@@ -2410,19 +2405,18 @@ class A:
     def helper(cls) -> int:
         return 1
     def f(self):
-        return self.helper()  # E: Missing argument `self`
+        return self.helper()
     g = f
     f = classmethod(f)
     def helper(self) -> str:
         return "instance"
 
 assert_type(A().g(), str)
-A.f()
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "Class-only attribute checks contaminate an instance alias",
     test_desugared_receiver_boundary_instance_field,
     r#"
 from typing import assert_type
@@ -2431,12 +2425,12 @@ class A:
     def __init__(self):
         self.value = 1
     def f(self):
-        return self.value  # E: Instance-only attribute `value`
+        return self.value
     g = f
     f = classmethod(f)
 
-assert_type(A().g(), int)  # E: assert_type
-A.f()
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
@@ -2460,7 +2454,6 @@ assert_type(A[int].f(1), int)
 );
 
 testcase!(
-    bug = "A shared receiver checks a rebound helper as an unbound call",
     test_desugared_receiver_boundary_helper_before_wrap,
     r#"
 from typing import assert_type
@@ -2470,19 +2463,18 @@ class A:
     def helper(cls) -> int:
         return 1
     def f(self):
-        return self.helper()  # E: Missing argument `self`
+        return self.helper()
     g = f
     def helper(self) -> str:
         return "instance"
     f = classmethod(f)
 
 assert_type(A().g(), str)
-A.f()
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
 
 testcase!(
-    bug = "A dual-use method advertises instance writes as class attributes",
     test_desugared_receiver_boundary_receiver_write,
     r#"
 from typing import assert_type
@@ -2495,7 +2487,7 @@ class A:
     f = classmethod(f)
 
 assert_type(A().g(), int)
-assert_type(A.created, int)
-A.f()
+A.created  # E: Instance-only attribute `created`
+A.f()  # E: Argument `type[A]` is not assignable
 "#,
 );
