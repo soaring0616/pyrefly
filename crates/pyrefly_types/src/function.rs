@@ -792,6 +792,32 @@ mod tests {
         );
     }
 
+    // Known bug: mapped_column specialization discards its definition identity.
+    #[test]
+    fn mapped_column_definition_identity() {
+        for name in ["sqlalchemy.orm", "sqlalchemy.orm._orm_constructors"] {
+            let source = "mapped_column";
+            let module = Module::new(
+                ModuleName::from_str(name),
+                ModulePath::memory(PathBuf::from(format!("{name}.py"))),
+                Arc::new(source.to_owned()),
+            );
+            let id = Arc::new(FuncDefId {
+                qname: QName::new(
+                    identifier(source, "mapped_column"),
+                    NestingContext::toplevel(),
+                    module.dupe(),
+                ),
+                cls: None,
+                def_index: FuncDefIndex(0),
+            });
+            let kind = FunctionKind::from_definition(id);
+            assert!(kind.as_func_def_id().is_none());
+            assert!(kind.to_func_symbol().is_none());
+            assert_eq!(kind.module_name(), ModuleName::from_str("sqlalchemy.orm"));
+        }
+    }
+
     #[test]
     fn func_def_id_equality_matches_ordering() {
         let source = "first second";
