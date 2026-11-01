@@ -1568,7 +1568,6 @@ assert_type(A().f(), A)
 );
 
 testcase!(
-    bug = "Rebinding a decorator changes reassigned receiver inference",
     test_desugared_classmethod_rebound_decorator,
     r#"
 from typing import Callable, overload
@@ -1579,7 +1578,7 @@ def adapt(f: Callable[[A], int]) -> Callable[[type[A]], int]:
     return wrapper
 
 class A:
-    @adapt  # E: Argument `(self: type[Self@A]) -> int` is not assignable
+    @adapt
     def f(self) -> int:
         return 1
     adapt = overload

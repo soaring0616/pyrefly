@@ -1294,7 +1294,7 @@ impl<'a> BindingsBuilder<'a> {
                     let decorator = self
                         .idx_to_binding(*idx)
                         .expect("a decorator has a binding");
-                    self.as_special_export(&decorator.expr)
+                    decorator.special
                 })
                 .collect::<Vec<_>>();
             if !functions.is_empty() && !specials.contains(&Some(SpecialExport::Overload)) {
