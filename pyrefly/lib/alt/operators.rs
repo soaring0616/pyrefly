@@ -724,16 +724,26 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         }
     }
 
-    /// Equal classes cannot use reflected arithmetic. Inherited ordinary methods and
-    /// stable aliases do not get subclass priority; dynamic callables retain the approximation.
+    /// Equal nominal classes cannot use reflected arithmetic. Unchanged ordinary methods
+    /// do not get subclass priority; protocols and dynamic callables retain the approximation.
     fn binary_operator_order(&self, op: Operator, lhs: &Type, rhs: &Type) -> BinaryOperatorOrder {
         if let (Type::ClassType(lhs_cls), Type::ClassType(rhs_cls)) = (lhs, rhs) {
             let lhs_obj = lhs_cls.class_object();
             let rhs_obj = rhs_cls.class_object();
             if lhs_obj == rhs_obj {
-                return BinaryOperatorOrder::ForwardOnly;
+                // Equal protocol annotations do not imply equal runtime classes.
+                return if self.get_metadata_for_class(lhs_obj).is_protocol() {
+                    BinaryOperatorOrder::ForwardFirst
+                } else {
+                    BinaryOperatorOrder::ForwardOnly
+                };
             }
             if self.has_superclass(rhs_obj, lhs_obj) {
+                if self.get_metadata_for_class(lhs_obj).is_protocol()
+                    || self.get_metadata_for_class(rhs_obj).is_protocol()
+                {
+                    return BinaryOperatorOrder::ReflectedFirst;
+                }
                 let reflected = Name::new_static(op.reflected_dunder());
                 let Some(right) = self.get_class_member_with_defining_class(rhs_obj, &reflected)
                 else {
