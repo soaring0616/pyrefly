@@ -2746,3 +2746,216 @@ class A:
 assert_type(A.f(), type[A])
 "#,
 );
+
+// Coverage for class-local receiver bookkeeping and conservative operation boundaries.
+testcase!(
+    test_desugared_cleanup_generic_static_helper,
+    r#"
+from typing import assert_type
+
+class A[T]:
+    @staticmethod
+    def helper[U](value: U) -> U:
+        return value
+    def f(self, value: T):
+        return self.helper(value)
+    g = f
+    f = classmethod(f)
+
+assert_type(A[int]().g(1), int)
+assert_type(A[int].f(1), int)
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_shadowed_static_decorator,
+    r#"
+from typing import assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+class A:
+    staticmethod = identity
+    @staticmethod
+    def helper(self) -> int:
+        return 1
+    def f(self):
+        return self.helper()
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_super_in_used_group,
+    r#"
+from typing import assert_type
+
+class Base:
+    def helper(self) -> int:
+        return 1
+
+class A(Base):
+    def f(self):
+        return super().helper()
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_rejected_overload_group,
+    r#"
+from typing import assert_type, overload
+
+class A:
+    @overload
+    def f(self, value: int) -> int: ...
+    @overload
+    def f(self, value: str) -> str: ...
+    def f(self, value: int | str) -> int | str:
+        receiver = self
+        return value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(1), int)
+assert_type(A().g("hello"), str)
+A.f(1)  # E: No matching overload
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_used_custom_decorator,
+    r#"
+from typing import assert_type
+
+def identity[T](value: T) -> T:
+    return value
+
+class A:
+    @identity
+    def f(self):
+        return self
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), A)
+A.f()  # E: Argument `type[A]` is not assignable
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_with_conversion,
+    r#"
+from contextlib import suppress
+from typing import Self, assert_type
+
+class A:
+    def f(self):
+        assert_type(self, Self)
+        return self
+    with suppress(Exception):
+        f = classmethod(f)
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_conditional_definitions,
+    r#"
+from typing import Self, assert_type
+
+flag: bool = bool()
+class A:
+    if flag:
+        def f(self):
+            assert_type(self, Self)
+            return self
+    else:
+        def f(self):
+            assert_type(self, Self)
+            return self
+    f = classmethod(f)  # E: Argument
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_generic_captured_default,
+    r#"
+from typing import Callable, assert_type
+
+class A:
+    def f(self) -> int:
+        return 1
+    def use[T](self, marker: T, callback: Callable[[A], int] = f) -> int:
+        return callback(self)
+    f = classmethod(f)
+
+assert_type(A().use("marker"), int)
+assert_type(A.f(), int)
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_mixed_overload_decorators,
+    r#"
+from typing import Self, assert_type, overload
+
+def identity[F](function: F) -> F:
+    return function
+
+class A:
+    @overload
+    @identity
+    def f(self, value: int) -> int: ...
+    @overload
+    @identity
+    def f(self, value: str) -> str: ...
+    def f(self, value: int | str) -> int | str:
+        assert_type(self, Self)
+        return value
+    f = classmethod(f)
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_repeated_overload_decorators,
+    r#"
+from typing import Self, assert_type, overload
+
+class A:
+    @overload
+    @overload
+    def f(cls, value: int) -> int: ...
+    @overload
+    @overload
+    def f(cls, value: str) -> str: ...
+    def f(cls, value: int | str) -> int | str:
+        assert_type(cls, type[Self])
+        return value
+    f = classmethod(f)
+"#,
+);
+
+testcase!(
+    test_desugared_cleanup_comprehension_iterator_capture,
+    r#"
+from typing import assert_type
+
+class A:
+    def f(self):
+        return self
+    xs = [x for x in (f,)]
+    f = classmethod(f)
+
+assert_type(A.xs[0](A()), A)
+assert_type(A.f(), type[A])
+"#,
+);
