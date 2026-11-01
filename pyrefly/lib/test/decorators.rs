@@ -2493,7 +2493,6 @@ class C:
 );
 
 testcase!(
-    bug = "A docstring write is mistaken for a retained instance method",
     test_desugared_classmethod_docstring_write,
     r#"
 from typing import assert_type
@@ -2503,11 +2502,13 @@ def helper(cls: type[A], value: int) -> int:
 
 class A:
     def f(cls, value: int) -> int:
-        return helper(cls, value)  # E: Argument `Self@A` is not assignable
+        return helper(cls, value)
     f.__doc__ = helper.__doc__
+    f.__doc__ = "documentation"
+    f.__doc__ += " extension"
     f = classmethod(f)
 
-assert_type(A.f(1), int)  # E: Argument `type[A]` is not assignable
+assert_type(A.f(1), int)
     "#,
 );
 
