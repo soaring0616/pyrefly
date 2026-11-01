@@ -1567,6 +1567,69 @@ assert_type(A().f(), A)
     "#,
 );
 
+testcase!(
+    bug = "Rebinding a decorator changes reassigned receiver inference",
+    test_desugared_classmethod_rebound_decorator,
+    r#"
+from typing import Callable, overload
+
+def adapt(f: Callable[[A], int]) -> Callable[[type[A]], int]:
+    def wrapper(cls: type[A]) -> int:
+        return f(cls())
+    return wrapper
+
+class A:
+    @adapt  # E: Argument `(self: type[Self@A]) -> int` is not assignable
+    def f(self) -> int:
+        return 1
+    adapt = overload
+    f = classmethod(f)
+
+A.f()
+    "#,
+);
+
+testcase!(
+    bug = "A classmethod conversion retypes an untouched sibling branch",
+    test_desugared_classmethod_branch_alias,
+    r#"
+from typing import assert_type
+
+def example(flag: bool) -> None:
+    class A:
+        def f(self):
+            return self
+        if flag:
+            f = classmethod(f)
+        else:
+            g = f
+    if not flag:
+        assert_type(A().g(), A)  # E: assert_type(type[example.A], example.A) failed  # E: is not assignable to parameter `self`
+
+example(False)
+    "#,
+);
+
+testcase!(
+    bug = "Instance aliases lose descriptor-dependent return precision",
+    test_desugared_classmethod_property_alias,
+    r#"
+from typing import assert_type
+
+class A:
+    @property
+    def value(self) -> int:
+        return 1
+    def f(self):
+        return self.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)  # E: assert_type(((self: A) -> int) | int, int) failed
+value: int = A().g()  # E: `((self: A) -> int) | int` is not assignable to `int`
+    "#,
+);
+
 // Regression test for https://github.com/facebook/pyrefly/issues/793 - we don't
 // want the `contextmanager` decorator to lose the "forall-ness" of the decorated
 // function.
