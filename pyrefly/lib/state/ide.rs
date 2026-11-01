@@ -405,10 +405,8 @@ pub(crate) fn insert_from_import_edit(
     }
 
     let (position, insert_text) = prepare_import_insertion(ast, format!("{display_text}\n"));
-    let insert_position =
-        find_import_block_insertion_point(ast, module_name_to_import.as_str()).unwrap_or(position);
     ImportEdit {
-        range: TextRange::at(insert_position, TextSize::new(0)),
+        range: TextRange::empty(position),
         insert_text,
         display_text,
         module_name: module_name_to_import.to_string(),
@@ -422,37 +420,51 @@ fn find_import_merge_edit(
 ) -> Option<(TextRange, String)> {
     let mut merge_edit = None;
     for stmt in import_block_stmts(ast) {
-        if let Stmt::ImportFrom(import_from) = stmt
-            && import_from_module_matches(import_from, module_name)
-        {
-            if import_from.names.iter().any(|alias| {
-                alias.name.as_str() == export_name
-                    && alias
+        match stmt {
+            Stmt::Import(import) => {
+                if import.names.iter().any(|alias| {
+                    alias.asname.as_ref().map_or_else(
+                        || alias.name.as_str().split('.').next() == Some(export_name),
+                        |name| name.as_str() == export_name,
+                    )
+                }) {
+                    return None;
+                }
+            }
+            Stmt::ImportFrom(import) => {
+                let same_module = import_from_module_matches(import, module_name);
+                for alias in &import.names {
+                    let local_name = alias
                         .asname
                         .as_ref()
-                        .is_none_or(|name| name.as_str() == export_name)
-            }) {
-                return Some((TextRange::empty(stmt.range().start()), String::new()));
+                        .map_or(alias.name.as_str(), |name| name.as_str());
+                    // A merge must not move a new binding after an existing one.
+                    // Wildcard imports may bind the name even though it is absent from the AST.
+                    if alias.name.as_str() == "*" {
+                        return None;
+                    }
+                    if local_name == export_name {
+                        return if same_module && alias.name.as_str() == export_name {
+                            Some((TextRange::empty(stmt.range().start()), String::new()))
+                        } else {
+                            None
+                        };
+                    }
+                }
+                if same_module
+                    && merge_edit.is_none()
+                    && let Some(alias) = import.names.last()
+                {
+                    merge_edit = Some((
+                        TextRange::empty(alias.range().end()),
+                        format!(", {export_name}"),
+                    ));
+                }
             }
-            if merge_edit.is_none()
-                && let Some(range) = merge_range_for_import(import_from, export_name)
-            {
-                merge_edit = Some((range, format!(", {}", export_name)));
-            }
+            _ => unreachable!("import block contains only import statements"),
         }
     }
     merge_edit
-}
-
-fn find_import_block_insertion_point(ast: &ModModule, module_name: &str) -> Option<TextSize> {
-    for stmt in import_block_stmts(ast) {
-        if let Stmt::ImportFrom(import_from) = stmt
-            && import_from_module_matches(import_from, module_name)
-        {
-            return Some(stmt.range().start());
-        }
-    }
-    None
 }
 
 fn import_block_stmts<'a>(ast: &'a ModModule) -> impl Iterator<Item = &'a Stmt> {
@@ -470,25 +482,6 @@ fn import_from_module_matches(import_from: &StmtImportFrom, module_name: &str) -
         .map(|module| module.as_str())
         .unwrap_or("");
     format!("{dots}{module}") == module_name
-}
-
-fn merge_range_for_import(import_from: &StmtImportFrom, export_name: &str) -> Option<TextRange> {
-    let mut last_alias_end: Option<TextSize> = None;
-    for alias in &import_from.names {
-        if alias.name.as_str() == "*"
-            || alias.asname.as_ref().is_some_and(|name| {
-                name.as_str() == export_name && alias.name.as_str() != export_name
-            })
-        {
-            return None;
-        }
-        let alias_end = alias
-            .asname
-            .as_ref()
-            .map_or(alias.name.range.end(), |asname| asname.range.end());
-        last_alias_end = Some(alias_end);
-    }
-    last_alias_end.map(|end| TextRange::at(end, TextSize::new(0)))
 }
 
 /// Some handles must be imported in absolute style,

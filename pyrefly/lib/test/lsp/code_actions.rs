@@ -2556,7 +2556,6 @@ fn insertion_test_import_merge_styles() {
 
 #[test]
 fn import_merge_binding_order() {
-    // BUG: Merging into a later statement can overwrite an earlier import binding.
     for prefix in [
         "from a import marker as Foo\n",
         "from other import Foo\n",
@@ -2573,7 +2572,10 @@ fn import_merge_binding_order() {
             edit.range.start().to_usize()..edit.range.end().to_usize(),
             &edit.insert_text,
         );
-        assert_eq!(actual, format!("{prefix}from a import make, Foo\n"));
+        assert_eq!(
+            actual,
+            format!("from a import Foo\n{prefix}from a import make\n")
+        );
     }
 }
 
@@ -6886,13 +6888,11 @@ fn pytest_fixture_annotation_import_binding_order() {
         .find(|action| action.title == "Add pytest fixture type annotation")
         .expect("missing fixture annotation action");
     let actual = apply_refactor_edits_for_module(&module_info, &action.edits);
-    // BUG: The generated import overwrites the existing `Foo == 17` binding.
-    let expected = code
-        .replace(
-            "from file_two import make\n",
-            "from file_two import make, Foo\n",
-        )
-        .replace("def item():", "def item() -> Foo:");
+    // BUG: The annotation still refers to `marker`; only import binding order is preserved.
+    let expected = format!(
+        "from file_two import Foo\n{}",
+        code.replace("def item():", "def item() -> Foo:")
+    );
     assert_eq!(actual, expected);
 }
 
