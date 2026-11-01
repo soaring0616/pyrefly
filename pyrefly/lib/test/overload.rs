@@ -1132,7 +1132,7 @@ class StreamFactory(Protocol):
 async def stream(value: int) -> AsyncIterator[int]: ...  # E: is not assignable to implementation return type
 @overload
 async def stream(value: str) -> AsyncIterator[str]: ...  # E: is not assignable to implementation return type
-async def stream(value: int | str) -> AsyncIterator[int] | AsyncIterator[str]:
+async def stream(value: int | str) -> AsyncIterator[int | str]:
     yield value
 
 async def check(factory: StreamFactory) -> None:
