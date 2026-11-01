@@ -2328,3 +2328,174 @@ class C:
     c = staticmethod(lambda x: x.name)  # E: Type of lambda parameter `x` is unknown  # E: The type of attribute `name` is unknown
 "#,
 );
+
+// Receiver-boundary tests keep instance aliases precise when class access has different behavior.
+testcase!(
+    bug = "A shared receiver loses descriptor-result correlation",
+    test_desugared_receiver_boundary_descriptor,
+    r#"
+from typing import assert_type, overload
+
+class Descriptor:
+    @overload
+    def __get__(self, obj: None, owner: type[object]) -> str: ...
+    @overload
+    def __get__(self, obj: A, owner: type[object]) -> int: ...
+    def __get__(self, obj: object | None, owner: type[object]) -> int | str:
+        return "class" if obj is None else 1
+
+class A:
+    value = Descriptor()
+    def f(self):
+        return self.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)  # E: assert_type
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A shared receiver loses an instance alias through a local",
+    test_desugared_receiver_boundary_receiver_alias,
+    r#"
+from typing import assert_type
+
+class A:
+    @property
+    def value(self) -> int:
+        return 1
+    def f(self):
+        receiver = self
+        return receiver.value
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)  # E: assert_type
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A shared receiver loses instance results in a nested closure",
+    test_desugared_receiver_boundary_nested_capture,
+    r#"
+from typing import assert_type
+
+class A:
+    @property
+    def value(self) -> int:
+        return 1
+    def f(self):
+        def read():
+            return self.value
+        return read
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g()(), int)  # E: assert_type
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A class receiver contaminates the saved instance method body",
+    test_desugared_receiver_boundary_final_helper,
+    r#"
+from typing import assert_type
+
+class A:
+    @classmethod
+    def helper(cls) -> int:
+        return 1
+    def f(self):
+        return self.helper()  # E: Missing argument `self`
+    g = f
+    f = classmethod(f)
+    def helper(self) -> str:
+        return "instance"
+
+assert_type(A().g(), str)
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "Class-only attribute checks contaminate an instance alias",
+    test_desugared_receiver_boundary_instance_field,
+    r#"
+from typing import assert_type
+
+class A:
+    def __init__(self):
+        self.value = 1
+    def f(self):
+        return self.value  # E: Instance-only attribute `value`
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)  # E: assert_type
+A.f()
+"#,
+);
+
+testcase!(
+    test_desugared_receiver_boundary_generic_helper,
+    r#"
+from typing import assert_type
+
+class A[T]:
+    @classmethod
+    def helper(cls, value: T) -> T:
+        return value
+    def f(self, value: T):
+        return self.helper(value)
+    g = f
+    f = classmethod(f)
+
+assert_type(A[int]().g(1), int)
+assert_type(A[int].f(1), int)
+"#,
+);
+
+testcase!(
+    bug = "A shared receiver checks a rebound helper as an unbound call",
+    test_desugared_receiver_boundary_helper_before_wrap,
+    r#"
+from typing import assert_type
+
+class A:
+    @classmethod
+    def helper(cls) -> int:
+        return 1
+    def f(self):
+        return self.helper()  # E: Missing argument `self`
+    g = f
+    def helper(self) -> str:
+        return "instance"
+    f = classmethod(f)
+
+assert_type(A().g(), str)
+A.f()
+"#,
+);
+
+testcase!(
+    bug = "A dual-use method advertises instance writes as class attributes",
+    test_desugared_receiver_boundary_receiver_write,
+    r#"
+from typing import assert_type
+
+class A:
+    def f(self) -> int:
+        self.created = 1
+        return 1
+    g = f
+    f = classmethod(f)
+
+assert_type(A().g(), int)
+assert_type(A.created, int)
+A.f()
+"#,
+);
