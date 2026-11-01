@@ -739,6 +739,32 @@ foo(obj.a, c)
     assert_eq!(parameter_name_hint_labels(code, true), vec!["a= ", "b= "]);
 }
 
+// Passing `args` without unpacking packs it as one element, so `*args=` is informative.
+#[test]
+fn test_show_hint_when_unstarred_arg_matches_vararg_name() {
+    let code = r#"
+def foo(*args: object) -> None:
+    pass
+
+args = (1, 2)
+foo(args)
+"#;
+    assert_eq!(parameter_name_hint_labels(code, true), vec!["*args= "]);
+}
+
+// Unpacking `*args` into `*args` makes the hint redundant.
+#[test]
+fn test_hide_hint_when_starred_arg_matches_vararg_name() {
+    let code = r#"
+def foo(*args: int) -> None:
+    pass
+
+args = (1, 2)
+foo(*args)
+"#;
+    assert_eq!(parameter_name_hint_labels(code, true), Vec::<String>::new());
+}
+
 #[test]
 fn test_parameter_name_hints_with_varargs() {
     let code = r#"

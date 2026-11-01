@@ -592,7 +592,7 @@ impl<'a> Transaction<'a> {
                                 && param_match.name.as_str() != "__self"
                                 && param_match.name.as_str() != "cls"
                                 && param_match.name.as_str() != "_cls"
-                                && !matches!(arg, Expr::Name(name) if name.id == *param_match.name)
+                                && !Self::inlay_hint_is_redundant(arg, &param_match)
                             {
                                 param_hints.push((
                                     arg.range().start(),
@@ -607,6 +607,15 @@ impl<'a> Transaction<'a> {
 
         param_hints.sort_by_key(|(pos, _)| *pos);
         param_hints
+    }
+
+    fn inlay_hint_is_redundant(arg: &Expr, param_match: &ParamNameMatch) -> bool {
+        let name = match (arg, param_match.is_vararg) {
+            (Expr::Name(name), false) => name,
+            (Expr::Starred(e), true) if let Expr::Name(name) = &*e.value => name,
+            _ => return false,
+        };
+        name.id == *param_match.name
     }
 
     pub(crate) fn param_name_for_positional_argument<'param>(
