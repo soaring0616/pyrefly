@@ -44,6 +44,7 @@ use crate::types::callable::unexpected_keyword;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::function::FunctionKind;
+use crate::types::literal::Lit;
 use crate::types::tuple::Tuple;
 use crate::types::types::Forallable;
 use crate::types::types::Type;
@@ -550,11 +551,13 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                 errors,
             )
             .ty;
-        if hint.is_some_and(|hint| {
-            hint.types()
-                .iter()
-                .any(|ty| self.is_sqlalchemy_mapped_hint(ty))
-        }) {
+        if keywords.iter().any(|keyword| keyword.arg.is_none())
+            || hint.is_some_and(|hint| {
+                hint.types()
+                    .iter()
+                    .any(|ty| self.is_sqlalchemy_mapped_hint(ty))
+            })
+        {
             return ret;
         }
         let Some(mut python_type) = self.sqlalchemy_mapped_column_python_type(call) else {
@@ -585,34 +588,23 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
     }
 
     fn sqlalchemy_mapped_column_is_nullable(&self, call: &ExprCall) -> bool {
-        let mut nullable = None;
-        let mut primary_key = false;
-        for keyword in &call.arguments.keywords {
-            let Some(arg) = &keyword.arg else {
-                continue;
-            };
-            match arg.as_str() {
-                "nullable" => {
-                    if let Some(value) = Self::expr_bool_literal(&keyword.value) {
-                        nullable = Some(value);
-                    }
-                }
-                "primary_key" => {
-                    if let Some(value) = Self::expr_bool_literal(&keyword.value) {
-                        primary_key = value;
-                    }
-                }
-                _ => {}
-            }
+        let errors = self.error_swallower();
+        if let Some(nullable) = call.arguments.find_keyword("nullable") {
+            // Only a known false flag rules out null values.
+            return !matches!(
+                self.expr_infer(&nullable.value, &errors),
+                Type::Literal(literal) if literal.value == Lit::Bool(false)
+            );
         }
-        nullable.unwrap_or(!primary_key)
-    }
-
-    fn expr_bool_literal(expr: &Expr) -> Option<bool> {
-        match expr {
-            Expr::BooleanLiteral(value) => Some(value.value),
-            _ => None,
-        }
+        !call
+            .arguments
+            .find_keyword("primary_key")
+            .is_some_and(|primary_key| {
+                matches!(
+                    self.expr_infer(&primary_key.value, &errors),
+                    Type::Literal(literal) if literal.value == Lit::Bool(true)
+                )
+            })
     }
 
     fn python_type_from_type_engine_expr(&self, expr: &Expr) -> Option<Type> {

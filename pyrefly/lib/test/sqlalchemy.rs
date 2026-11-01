@@ -254,26 +254,25 @@ assert_type(Model().color, Any)
 );
 
 testcase!(
-    bug = "Nonliteral nullable flags are mistaken for omitted flags",
     test_sqlalchemy_mapped_column_nullable_flags,
     sqlalchemy_env(),
     r#"
-from typing import Literal, assert_type
+from typing import Any, Literal, assert_type
 from sqlalchemy.orm import MappedColumn, mapped_column
 from sqlalchemy.sql.sqltypes import String
 
 TRUE: Literal[True] = True
 FALSE: Literal[False] = False
-assert_type(mapped_column(String, primary_key=True, nullable=TRUE), MappedColumn[str])
-assert_type(mapped_column(String, nullable=FALSE), MappedColumn[str | None])
-assert_type(mapped_column(String, primary_key=TRUE), MappedColumn[str | None])
-assert_type(mapped_column(String, primary_key=True, **{"nullable": True}), MappedColumn[str])
+assert_type(mapped_column(String, primary_key=True, nullable=TRUE), MappedColumn[str | None])
+assert_type(mapped_column(String, nullable=FALSE), MappedColumn[str])
+assert_type(mapped_column(String, primary_key=TRUE), MappedColumn[str])
+assert_type(mapped_column(String, primary_key=True, **{"nullable": True}), MappedColumn[Any])
 
 def make(nullable: bool, primary_key: bool) -> None:
-    assert_type(mapped_column(String, primary_key=True, nullable=nullable), MappedColumn[str])
+    assert_type(mapped_column(String, primary_key=True, nullable=nullable), MappedColumn[str | None])
     assert_type(mapped_column(String, primary_key=primary_key), MappedColumn[str | None])
     assert_type(mapped_column(String, nullable=False, primary_key=primary_key), MappedColumn[str])
-    assert_type(mapped_column(String, primary_key=True, nullable=None), MappedColumn[str])
+    assert_type(mapped_column(String, primary_key=True, nullable=None), MappedColumn[str | None])
 "#,
 );
 
